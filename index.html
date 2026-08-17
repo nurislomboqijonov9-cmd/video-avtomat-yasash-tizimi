@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Video Fabrikasi</title>
+<style>
+  :root{--bg:#0a0f1e;--card:#131b2e;--card2:#0f1728;--border:#1f2a44;--border2:#26324f;
+    --accent:#4a7dff;--accent2:#3b6cf0;--green:#22c55e;--amber:#f59e0b;--purple:#a855f7;--red:#ef4444;
+    --text:#e8edf7;--muted:#8b98b5;--muted2:#6b7896;--mono:#9fd0ff;--ar:16/9;--pw:760px}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:radial-gradient(1200px 600px at 50% -10%,#17233f 0%,var(--bg) 55%) fixed;
+    color:var(--text);min-height:100vh;padding:24px 16px 80px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto}
+  header.top{text-align:center;margin-bottom:22px}
+  .logo{display:inline-flex;align-items:center;gap:10px;font-weight:800;font-size:13px;letter-spacing:2px;
+    text-transform:uppercase;color:var(--accent);background:rgba(74,125,255,.1);padding:7px 14px;border-radius:999px;border:1px solid rgba(74,125,255,.25)}
+  header.top h1{font-size:30px;margin:16px 0 6px;font-weight:800;letter-spacing:-.5px}
+  header.top p{color:var(--muted);font-size:15px}
+  .steps{display:flex;justify-content:center;gap:8px;margin:20px auto 26px;flex-wrap:wrap}
+  .step{display:flex;align-items:center;gap:8px;background:var(--card2);border:1px solid var(--border);padding:8px 14px;border-radius:999px;font-size:13px;color:var(--muted);font-weight:600}
+  .step .num{width:20px;height:20px;border-radius:50%;background:var(--border2);color:var(--muted);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800}
+  .step.active{border-color:var(--accent);color:var(--text)}.step.active .num{background:var(--accent);color:#fff}
+  .step.done .num{background:var(--green);color:#fff}.step.done{color:var(--text)}
+  .panel{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--border);border-radius:18px;padding:22px;margin-bottom:22px;box-shadow:0 20px 60px -30px rgba(0,0,0,.7)}
+  label.fld{display:block;font-size:13px;color:var(--muted);margin:0 0 8px;font-weight:600}
+  textarea,select{width:100%;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:12px;padding:13px 14px;font-size:15px;font-family:inherit;outline:none;transition:.15s}
+  textarea{min-height:88px;resize:vertical;line-height:1.5}
+  textarea:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(74,125,255,.15)}
+  .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:14px;margin-top:16px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;background:linear-gradient(180deg,var(--accent),var(--accent2));color:#fff;border:none;border-radius:12px;padding:14px 22px;font-size:15px;font-weight:700;cursor:pointer;width:100%;margin-top:18px;transition:.1s;box-shadow:0 10px 30px -10px rgba(74,125,255,.6)}
+  .btn:hover{filter:brightness(1.07)}.btn:active{transform:translateY(1px)}.btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.green{background:linear-gradient(180deg,#22c55e,#16a34a);box-shadow:0 10px 30px -10px rgba(34,197,94,.6)}
+  .btn.purple{background:linear-gradient(180deg,#a855f7,#7c3aed);box-shadow:0 10px 30px -10px rgba(168,85,247,.6)}
+  .btn.ghost{background:transparent;border:1px solid var(--border2);box-shadow:none;color:var(--muted);width:auto;padding:9px 14px;font-size:13px;margin:0}
+  .btn.ghost:hover{color:var(--text);border-color:var(--accent)}
+  .status{display:none;align-items:center;gap:12px;color:var(--muted);font-size:14px;margin-top:16px}
+  .status.on{display:flex}
+  .spinner{width:18px;height:18px;border:2.5px solid rgba(255,255,255,.15);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .err{display:none;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);color:#fca5a5;padding:12px 14px;border-radius:12px;margin-top:14px;font-size:14px}
+  .err.on{display:block}
+  #out{display:none}#out.on{display:block}
+  .storyhead h2{font-size:24px;font-weight:800;margin-bottom:6px}
+  .storyhead .logline{color:var(--muted);font-size:15px;line-height:1.5;max-width:760px}
+  .sec-title{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--muted2);font-weight:700;margin:28px 0 14px;display:flex;align-items:center;gap:10px}
+  .sec-title .line{height:1px;background:var(--border);flex:1}
+  .chars{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+  .char{background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:14px}
+  .char .nm{font-weight:700;font-size:15px;margin-bottom:6px;color:var(--accent)}
+  .char .ds{font-size:13px;color:var(--muted);line-height:1.55}
+  .frames{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:720px){.frames{grid-template-columns:1fr}}
+  .frame{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--border);border-radius:16px;padding:16px;animation:pop .35s ease both}
+  @keyframes pop{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .frame .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .badge{background:linear-gradient(180deg,var(--accent),var(--accent2));color:#fff;font-weight:800;font-size:12px;letter-spacing:1px;padding:5px 11px;border-radius:8px}
+  .time{background:#0b1120;border:1px solid var(--border2);color:var(--mono);font-size:12px;padding:5px 10px;border-radius:8px;font-variant-numeric:tabular-nums}
+  .vslot{position:relative;aspect-ratio:var(--ar);max-height:360px;border-radius:11px;overflow:hidden;margin-bottom:11px;background:linear-gradient(135deg,#0d1526,#111a30);border:1px solid var(--border);display:flex;align-items:center;justify-content:center}
+  .vslot video{width:100%;height:100%;object-fit:cover}
+  .vslot .vstatus{font-size:12px;color:var(--muted2);display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:10px}
+  .vslot .genwave{width:34px;height:34px;border:3px solid rgba(74,125,255,.25);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+  .vtag{position:absolute;top:8px;right:8px;font-size:10px;font-weight:800;letter-spacing:.5px;padding:4px 8px;border-radius:6px;z-index:2}
+  .vtag.wait{background:rgba(107,120,150,.25);color:#b4c0dc}
+  .vtag.gen{background:rgba(74,125,255,.25);color:#9fc0ff}
+  .vtag.done{background:rgba(34,197,94,.2);color:#7ee2a3}
+  .vtag.fail{background:rgba(239,68,68,.25);color:#fca5a5}
+  .loc{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);margin-bottom:10px}
+  .loc .dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
+  .prompt{background:#0b1220;border:1px solid var(--border);border-radius:10px;padding:11px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;color:#b9c6e6;white-space:pre-wrap;max-height:110px;overflow:auto}
+  .dlg{margin-top:11px;background:rgba(245,158,11,.08);border-left:3px solid var(--amber);border-radius:0 8px 8px 0;padding:9px 12px}
+  .dlg .who{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--amber);font-weight:700;margin-bottom:3px}
+  .dlg .txt{font-size:14px;color:var(--text);line-height:1.45}
+  .costbox{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}
+  .costbox .left{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .costbig{font-size:15px;color:var(--muted)}.costbig b{color:var(--green);font-size:22px}
+  #finalWrap{display:none;text-align:center}#finalWrap.on{display:block}
+  #finalVideo{width:100%;max-width:var(--pw);border-radius:18px;border:1px solid var(--border);background:#000}
+  .note{font-size:12px;color:var(--muted2);margin-top:6px;line-height:1.5}
+  a.dl{display:inline-block;margin-top:14px;color:var(--accent);font-weight:700;text-decoration:none;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo">⚡ AI VIDEO FABRIKASI</div>
+    <h1>G'oyadan tayyor videogacha</h1>
+    <p>Qisqa yozing — AI senariy yozadi, chin video yasaydi va o'zi ulaydi</p>
+    <div class="steps" id="steps">
+      <div class="step active" data-s="1"><span class="num">1</span> Senariy</div>
+      <div class="step" data-s="2"><span class="num">2</span> Video yasash</div>
+      <div class="step" data-s="3"><span class="num">3</span> Montaj</div>
+      <div class="step" data-s="4"><span class="num">4</span> Tayyor</div>
+    </div>
+  </header>
+
+  <div class="panel">
+    <label class="fld">🎬 Video nima haqida?</label>
+    <textarea id="brief" placeholder="Masalan: Duradgor yigit va biznes ayol yarmarkada tanishadi. Birga mebel biznesini quradilar, oxiri ko'l bo'yidagi orzu uyiga ko'chadilar. Iliq, romantik, hayotiy hikoya."></textarea>
+    <div class="row">
+      <div><label class="fld">🎨 Uslub</label>
+        <select id="style">
+          <option value="Stylized 3D Pixar-style render, cinematic lighting, high detail">Pixar 3D</option>
+          <option value="Photorealistic cinematic film, 35mm, natural lighting">Realistik kino</option>
+          <option value="Anime style, vibrant colors, detailed backgrounds">Anime</option>
+          <option value="Warm hand-drawn 2D animation, storybook aesthetic">2D multfilm</option>
+        </select></div>
+      <div><label class="fld">⏱ Davomiylik</label>
+        <select id="dur">
+          <option value="30">30s · 5 kadr</option>
+          <option value="60" selected>1 daq · 10 kadr</option>
+          <option value="90">1.5 daq · 15 kadr</option>
+          <option value="120">2 daq · 20 kadr</option>
+        </select></div>
+      <div><label class="fld">💬 Dialog tili</label>
+        <select id="lang">
+          <option value="Uzbek (Latin script)" selected>O'zbekcha</option>
+          <option value="Russian">Ruscha</option>
+          <option value="English">Inglizcha</option>
+        </select></div>
+      <div><label class="fld">📐 Format</label>
+        <select id="format">
+          <option value="16:9" selected>16:9 · YouTube</option>
+          <option value="9:16">9:16 · TikTok/Reels</option>
+          <option value="1:1">1:1 · Instagram</option>
+          <option value="21:9">21:9 · Kino</option>
+        </select></div>
+    </div>
+    <button class="btn" id="go">✨ 1-BOSQICH: Senariy yasash</button>
+    <div class="status" id="status"><div class="spinner"></div><span id="statusText">Ishlayapti…</span></div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div id="out">
+    <div class="storyhead"><h2 id="title"></h2><div class="logline" id="logline"></div></div>
+    <div class="sec-title">👥 Personajlar<span class="line"></span></div>
+    <div class="chars" id="chars"></div>
+
+    <div class="sec-title">🎥 Video yasash<span class="line"></span></div>
+    <div class="panel">
+      <div class="costbox">
+        <div class="left">
+          <div style="min-width:150px"><label class="fld">Taxminiy narx</label>
+            <div class="costbig"><b id="totalCost">$0.00</b> <span id="costDetail" style="font-size:12px"></span></div>
+          </div>
+        </div>
+        <button class="btn green" id="genAll" style="width:auto;margin:0">🎬 Barcha kadrlarni yasash</button>
+      </div>
+      <div class="note">Har kadr fal.ai orqali chin video sifatida yasaladi. Bittasi ~30–60 soniya oladi.</div>
+    </div>
+    <div class="frames" id="frames"></div>
+
+    <div id="stitchWrap" style="display:none">
+      <div class="sec-title">🎞 Montaj<span class="line"></span></div>
+      <div class="panel" style="text-align:center">
+        <p style="color:var(--muted);font-size:14px;margin-bottom:14px">Barcha kliplar tayyor. Endi ular bitta videoga ulanadi.</p>
+        <button class="btn purple" id="stitch" style="max-width:360px;margin:0 auto">🎬 Kadrlarni ulash</button>
+        <div class="status" id="stitchStatus" style="justify-content:center"><div class="spinner"></div><span id="stitchText">Ulanyapti…</span></div>
+      </div>
+    </div>
+
+    <div id="finalWrap">
+      <div class="sec-title">✅ Tayyor video<span class="line"></span></div>
+      <video id="finalVideo" controls></video>
+      <div><a class="dl" id="dlLink" href="#" download>⬇ Videoni yuklab olish</a></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let STATE={frames:[]};
+const FRAME_LEN=6;
+const COST_PER_SEC=0.04; // LTX-2 Fast taxminiy
+
+function setStep(n){document.querySelectorAll('.step').forEach(s=>{const v=+s.dataset.s;s.classList.toggle('active',v===n);s.classList.toggle('done',v<n);});}
+function fmt(sec){return Math.floor(sec/60)+":"+String(sec%60).padStart(2,"0");}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function setStatus(on,t){$("status").classList.toggle("on",on);if(t)$("statusText").textContent=t;}
+function showErr(m){$("err").textContent="⚠ "+m;$("err").classList.add("on");}
+function clearErr(){$("err").classList.remove("on");}
+
+const FORMATS={"16:9":{ar:"16/9",pw:"760px"},"9:16":{ar:"9/16",pw:"300px"},"1:1":{ar:"1/1",pw:"460px"},"21:9":{ar:"21/9",pw:"860px"}};
+function applyFormat(){const f=FORMATS[$("format").value]||FORMATS["16:9"];document.documentElement.style.setProperty("--ar",f.ar);document.documentElement.style.setProperty("--pw",f.pw);}
+$("format").addEventListener("change",applyFormat);
+function updateCost(){const n=STATE.frames.length||Math.round(parseInt($("dur").value,10)/FRAME_LEN);const total=COST_PER_SEC*FRAME_LEN*n;$("totalCost").textContent="$"+total.toFixed(2);$("costDetail").textContent=`(${n} kadr)`;}
+$("dur").addEventListener("change",updateCost);
+
+function renderHead(d){
+  $("title").textContent=d.title;$("logline").textContent=d.logline;
+  $("chars").innerHTML=(d.characters||[]).map(c=>`<div class="char"><div class="nm">${esc(c.name)}</div><div class="ds">${esc(c.description)}</div></div>`).join("");
+  $("out").classList.add("on");
+}
+function renderFrame(f){
+  const d=document.createElement("div");d.className="frame";d.id="frame-"+f.n;
+  d.innerHTML=`<div class="head"><span class="badge">КАДР #${String(f.n).padStart(3,"0")}</span><span class="time">${fmt(f.start)} — ${fmt(f.end)}</span></div>
+    <div class="vslot" id="vslot-${f.n}"><div class="vtag wait" id="vtag-${f.n}">⏳ KUTILMOQDA</div><div class="vstatus" id="vstatus-${f.n}">🎬<br>video hali yasalmagan</div></div>
+    <div class="loc"><span class="dot"></span>${esc(f.location||"")}</div>
+    <div class="prompt">${esc(f.visual_prompt||"")}</div>
+    ${f.dialog?`<div class="dlg"><div class="who">${esc(f.speaker||"—")}</div><div class="txt">"${esc(f.dialog)}"</div></div>`:""}`;
+  $("frames").appendChild(d);
+}
+
+// 1) SENARIY
+$("go").onclick=async()=>{
+  const brief=$("brief").value.trim();
+  if(!brief){showErr("Avval qisqa yozing.");return;}
+  clearErr();applyFormat();
+  $("go").disabled=true;setStep(1);
+  $("frames").innerHTML="";$("out").classList.remove("on");$("stitchWrap").style.display="none";$("finalWrap").classList.remove("on");
+  setStatus(true,"Senariy va kadrlar yozilyapti… (biroz kutasiz)");
+  try{
+    const r=await fetch("/scenario",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({brief,style:$("style").value,dur:parseInt($("dur").value,10),lang:$("lang").value})});
+    const d=await r.json();
+    if(d.error)throw new Error(d.error);
+    STATE={frames:d.frames,title:d.title,logline:d.logline,characters:d.characters,aspect_ratio:$("format").value};
+    renderHead(d);STATE.frames.forEach(renderFrame);
+    setStatus(false);updateCost();setStep(2);
+  }catch(e){setStatus(false);showErr("Xatolik: "+e.message);}finally{$("go").disabled=false;}
+};
+
+// 2) VIDEO (haqiqiy)
+$("genAll").onclick=async()=>{
+  $("genAll").disabled=true;setStep(2);
+  const jobId="job"+Date.now();STATE.jobId=jobId;
+  let ok=0;
+  for(const f of STATE.frames){
+    const tag=$("vtag-"+f.n),vs=$("vstatus-"+f.n);
+    tag.className="vtag gen";tag.textContent="⚡ YASALYAPTI";
+    vs.innerHTML='<div class="genwave"></div>video yasalyapti…';
+    try{
+      const r=await fetch("/clip",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({jobId,frame:f,aspect_ratio:STATE.aspect_ratio})});
+      const d=await r.json();
+      if(d.error)throw new Error(d.error);
+      tag.className="vtag done";tag.textContent="✓ ГОТОВО";
+      $("vslot-"+f.n).innerHTML=`<div class="vtag done">✓ ГОТОВО</div><video src="${d.clipUrl}" controls muted loop playsinline></video>`;
+      ok++;
+    }catch(e){
+      tag.className="vtag fail";tag.textContent="✕ XATO";
+      vs.innerHTML="⚠<br>"+esc(e.message);
+    }
+  }
+  if(ok>0){$("stitchWrap").style.display="block";setStep(3);$("stitchWrap").scrollIntoView({behavior:"smooth",block:"center"});}
+  else{$("genAll").disabled=false;}
+};
+
+// 3) MONTAJ
+$("stitch").onclick=async()=>{
+  $("stitch").disabled=true;$("stitchStatus").classList.add("on");$("stitchText").textContent="Kliplar ulanyapti…";
+  try{
+    const r=await fetch("/stitch",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({jobId:STATE.jobId,project:STATE.title||"video"})});
+    const d=await r.json();
+    if(d.error)throw new Error(d.error);
+    $("stitchStatus").classList.remove("on");
+    $("finalWrap").classList.add("on");setStep(4);
+    $("finalVideo").src=d.url;$("dlLink").href=d.url;
+    $("finalWrap").scrollIntoView({behavior:"smooth",block:"center"});
+  }catch(e){$("stitchStatus").classList.remove("on");showErr("Montaj xatosi: "+e.message);$("stitch").disabled=false;}
+};
+
+applyFormat();updateCost();
+</script>
+</body>
+</html>
