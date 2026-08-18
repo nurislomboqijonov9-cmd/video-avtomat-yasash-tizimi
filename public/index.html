@@ -79,9 +79,38 @@
   #finalVideo{width:100%;max-width:var(--pw);border-radius:18px;border:1px solid var(--border);background:#000}
   .note{font-size:12px;color:var(--muted2);margin-top:6px;line-height:1.5}
   a.dl{display:inline-block;margin-top:14px;color:var(--accent);font-weight:700;text-decoration:none;font-size:14px}
+  /* parol oynasi */
+  #gate{position:fixed;inset:0;background:rgba(10,15,30,.96);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+  #gate .box{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:28px;max-width:360px;width:100%;text-align:center}
+  #gate h2{font-size:20px;margin-bottom:6px}
+  #gate p{color:var(--muted);font-size:13px;margin-bottom:16px}
+  #gate input{margin-bottom:12px;text-align:center;font-size:16px}
+  #gateErr{color:#fca5a5;font-size:13px;margin-top:10px;display:none}
+  /* tarix */
+  .histbtn{position:fixed;top:16px;right:16px;z-index:50}
+  .hist{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+  .hitem{background:var(--card2);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+  .hitem video{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
+  .hitem .hmeta{padding:10px 12px}
+  .hitem .htitle{font-size:14px;font-weight:700;margin-bottom:3px}
+  .hitem .hdate{font-size:11px;color:var(--muted2)}
 </style>
 </head>
 <body>
+<!-- PAROL OYNASI -->
+<div id="gate" style="display:none">
+  <div class="box">
+    <div class="logo" style="margin-bottom:14px">🔒 KIRISH</div>
+    <h2>Parolni kiriting</h2>
+    <p>Bu sahifa himoyalangan</p>
+    <input type="password" id="pwInput" placeholder="Parol" />
+    <button class="btn" id="pwBtn" style="margin-top:0">Kirish</button>
+    <div id="gateErr">Parol noto'g'ri</div>
+  </div>
+</div>
+
+<button class="btn ghost histbtn" id="histBtn" style="display:none">📁 Mening videolarim</button>
+
 <div class="wrap">
   <header class="top">
     <div class="logo">⚡ AI VIDEO FABRIKASI</div>
@@ -132,6 +161,13 @@
     <div class="err" id="err"></div>
   </div>
 
+  <!-- VIDEOLAR TARIXI -->
+  <div id="historyWrap" style="display:none">
+    <div class="sec-title">📁 Mening videolarim<span class="line"></span></div>
+    <div class="hist" id="histList"></div>
+    <button class="btn ghost" id="backBtn" style="margin-top:18px">← Orqaga (yangi video)</button>
+  </div>
+
   <div id="out">
     <div class="storyhead"><h2 id="title"></h2><div class="logline" id="logline"></div></div>
     <div class="sec-title">👥 Personajlar<span class="line"></span></div>
@@ -171,8 +207,44 @@
 <script>
 const $=id=>document.getElementById(id);
 let STATE={frames:[]};
+let APP_PW=""; // kiritilgan parol (xotirada)
 const FRAME_LEN=6;
-const COST_PER_SEC=0.04; // LTX-2 Fast taxminiy
+const COST_PER_SEC=0.04;
+
+// so'rovlarga parol sarlavhasini qo'shadigan yordamchi
+function authHeaders(extra){return Object.assign({"Content-Type":"application/json","x-app-password":APP_PW}, extra||{});}
+
+// ---- PAROL ----
+async function checkGate(){
+  // login sinab ko'ramiz (parol yo'q bo'lsa server ok qaytaradi)
+  try{
+    const r=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:""})});
+    if(r.ok){$("gate").style.display="none";$("histBtn").style.display="block";return;} // parol yo'q — ochiq
+  }catch(e){}
+  $("gate").style.display="flex"; // parol kerak
+}
+async function doLogin(){
+  const pw=$("pwInput").value;
+  const r=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw})});
+  if(r.ok){APP_PW=pw;$("gate").style.display="none";$("histBtn").style.display="block";}
+  else{$("gateErr").style.display="block";}
+}
+$("pwBtn").onclick=doLogin;
+$("pwInput").addEventListener("keydown",e=>{if(e.key==="Enter")doLogin();});
+checkGate();
+
+// ---- TARIX ----
+$("histBtn").onclick=async()=>{
+  $("out").style.display="none";$("historyWrap").style.display="block";$("histBtn").style.display="none";
+  $("histList").innerHTML='<div style="color:var(--muted)">Yuklanyapti…</div>';
+  try{
+    const r=await fetch("/history",{headers:authHeaders()});
+    const d=await r.json();
+    if(!d.items||!d.items.length){$("histList").innerHTML='<div style="color:var(--muted)">Hali video yo\'q. Birinchisini yasang!</div>';return;}
+    $("histList").innerHTML=d.items.map(it=>`<div class="hitem"><video src="${it.url}" controls preload="metadata"></video><div class="hmeta"><div class="htitle">${(it.title||"Video").replace(/[<>]/g,"")}</div><div class="hdate">${new Date(it.date).toLocaleString()}</div></div></div>`).join("");
+  }catch(e){$("histList").innerHTML='<div style="color:#fca5a5">Xato: '+e.message+'</div>';}
+};
+$("backBtn").onclick=()=>{$("historyWrap").style.display="none";$("out").style.display="block";$("histBtn").style.display="block";}; // LTX-2 Fast taxminiy
 
 function setStep(n){document.querySelectorAll('.step').forEach(s=>{const v=+s.dataset.s;s.classList.toggle('active',v===n);s.classList.toggle('done',v<n);});}
 function fmt(sec){return Math.floor(sec/60)+":"+String(sec%60).padStart(2,"0");}
@@ -211,7 +283,7 @@ $("go").onclick=async()=>{
   $("frames").innerHTML="";$("out").classList.remove("on");$("stitchWrap").style.display="none";$("finalWrap").classList.remove("on");
   setStatus(true,"Senariy va kadrlar yozilyapti… (biroz kutasiz)");
   try{
-    const r=await fetch("/scenario",{method:"POST",headers:{"Content-Type":"application/json"},
+    const r=await fetch("/scenario",{method:"POST",headers:authHeaders(),
       body:JSON.stringify({brief,style:$("style").value,dur:parseInt($("dur").value,10),lang:$("lang").value})});
     const d=await r.json();
     if(d.error)throw new Error(d.error);
@@ -231,7 +303,7 @@ $("genAll").onclick=async()=>{
     tag.className="vtag gen";tag.textContent="⚡ YASALYAPTI";
     vs.innerHTML='<div class="genwave"></div>video yasalyapti…';
     try{
-      const r=await fetch("/clip",{method:"POST",headers:{"Content-Type":"application/json"},
+      const r=await fetch("/clip",{method:"POST",headers:authHeaders(),
         body:JSON.stringify({jobId,frame:f,aspect_ratio:STATE.aspect_ratio,characters:STATE.characters})});
       const d=await r.json();
       if(d.error)throw new Error(d.error);
@@ -251,7 +323,7 @@ $("genAll").onclick=async()=>{
 $("stitch").onclick=async()=>{
   $("stitch").disabled=true;$("stitchStatus").classList.add("on");$("stitchText").textContent="Kliplar ulanyapti…";
   try{
-    const r=await fetch("/stitch",{method:"POST",headers:{"Content-Type":"application/json"},
+    const r=await fetch("/stitch",{method:"POST",headers:authHeaders(),
       body:JSON.stringify({jobId:STATE.jobId,project:STATE.title||"video"})});
     const d=await r.json();
     if(d.error)throw new Error(d.error);
