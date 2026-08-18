@@ -2,13 +2,13 @@
 //  AI VIDEO FABRIKASI — to'liq server (bitta faylda hamma narsa)
 //  ---------------------------------------------------------------------
 //  1. Interfeysni beradi (public/index.html)
-//  2. /scenario  — Anthropic orqali senariy + kadr promtlarini yozadi
+//  2. /scenario  — Google Gemini (BEPUL) orqali senariy yozadi
 //  3. /clip      — fal.ai orqali bitta kadr videosini yasaydi
 //  4. /stitch    — barcha kliplarni ffmpeg bilan bitta videoga ulaydi
 //
-//  Kerakli maxfiy o'zgaruvchilar (Railway "Variables" bo'limida):
-//    ANTHROPIC_API_KEY  — console.anthropic.com dan
-//    FAL_KEY            — fal.ai dan
+//  Railway "Variables" bo'limida kerak:
+//    GEMINI_API_KEY  — aistudio.google.com/apikey dan (BEPUL)
+//    FAL_KEY         — fal.ai dan (video uchun)
 // =====================================================================
 
 import express from "express";
@@ -22,13 +22,11 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 
-// ---- Kalitlar ----
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FAL_KEY = process.env.FAL_KEY;
 
-// ---- Modellar (xohlasang o'zgartir) ----
-const TEXT_MODEL = process.env.TEXT_MODEL || "claude-sonnet-5";        // senariy uchun
-const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-2/text-to-video"; // video uchun (arzon)
+const TEXT_MODEL = process.env.TEXT_MODEL || "gemini-2.5-flash";
+const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-2/text-to-video";
 
 if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 
@@ -42,25 +40,22 @@ app.use("/output", express.static(OUT_DIR));
 
 const FRAME_LEN = 6;
 
-// ---------------- Anthropic yordamchi ----------------
-async function callClaude(system, user, maxTokens = 2000) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+async function callAI(system, user, maxTokens = 3000) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${TEXT_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: TEXT_MODEL,
-      max_tokens: maxTokens,
-      system,
-      messages: [{ role: "user", content: user }],
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.9 },
     }),
   });
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message || "Anthropic xatosi");
-  return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  if (data.error) throw new Error(data.error.message || "Gemini xatosi");
+  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
+  if (!text) throw new Error("Gemini bo'sh javob qaytardi");
+  return text;
 }
 function parseJson(t) {
   t = (t || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
@@ -69,19 +64,17 @@ function parseJson(t) {
   return JSON.parse(t);
 }
 
-// ---------------- 1) SENARIY ----------------
 app.post("/scenario", async (req, res) => {
   try {
-    if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY o'rnatilmagan (Railway Variables).");
+    if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY o'rnatilmagan (Railway Variables).");
     const { brief, style, dur = 60, lang = "Uzbek (Latin script)" } = req.body;
     if (!brief) throw new Error("brief bo'sh");
     const frameCount = Math.round(dur / FRAME_LEN);
 
-    // Reja: sarlavha, personajlar, beats
     const planSys = `You are a professional AI-video pipeline director. Return ONLY valid JSON (no markdown):
 {"title":"catchy title","logline":"1-2 sentence summary","characters":[{"name":"Name","description":"FIXED detailed look: age, hair, build, face, signature clothing — reused every shot for consistency"}],"beats":["short sentence for shot 1","..."]}
 Rules: exactly ${frameCount} beats (one per ${FRAME_LEN}s shot). Clear beginning, middle, emotional payoff. 2-4 characters.`;
-    const plan = parseJson(await callClaude(planSys, `BRIEF: ${brief}\nSTYLE: ${style}\nShots: ${frameCount}`, 2500));
+    const plan = parseJson(await callAI(planSys, `BRIEF: ${brief}\nSTYLE: ${style}\nShots: ${frameCount}`, 3000));
 
     const characters = plan.characters || [];
     let beats = plan.beats || [];
@@ -89,7 +82,6 @@ Rules: exactly ${frameCount} beats (one per ${FRAME_LEN}s shot). Clear beginning
     beats = beats.slice(0, frameCount);
     const bible = characters.map((c) => c.name + ": " + c.description).join("\n");
 
-    // Kadrlarni to'ldirish (5talik guruhlarda)
     const frames = [];
     const BATCH = 5;
     for (let i = 0; i < frameCount; i += BATCH) {
@@ -102,7 +94,7 @@ CHARACTER BIBLE (reuse EXACT descriptions when a character appears):
 ${bible}
 Return ONLY JSON: {"frames":[{"n":<int>,"location":"scene name","visual_prompt":"detailed ENGLISH prompt incl full description of any character present, camera, lighting, action","speaker":"name or empty","dialog":"line in ${lang} or empty"}]}`;
       let batch = [];
-      try { batch = parseJson(await callClaude(expSys, `Expand:\n${tb}\nLogline: ${plan.logline}`, 2500)).frames || []; } catch (e) {}
+      try { batch = parseJson(await callAI(expSys, `Expand:\n${tb}\nLogline: ${plan.logline}`, 3000)).frames || []; } catch (e) {}
       for (let k = 0; k < to - from + 1; k++) {
         const n = from + k;
         const bf = batch.find((x) => +x.n === n) || batch[k] || {};
@@ -120,7 +112,6 @@ Return ONLY JSON: {"frames":[{"n":<int>,"location":"scene name","visual_prompt":
   }
 });
 
-// ---------------- 2) BITTA KLIP ----------------
 app.post("/clip", async (req, res) => {
   try {
     if (!FAL_KEY) throw new Error("FAL_KEY o'rnatilmagan (Railway Variables).");
@@ -150,7 +141,6 @@ app.post("/clip", async (req, res) => {
   }
 });
 
-// ---------------- 3) MONTAJ ----------------
 app.post("/stitch", async (req, res) => {
   try {
     const { jobId, project = "video" } = req.body;
@@ -187,7 +177,7 @@ app.post("/stitch", async (req, res) => {
 });
 
 app.get("/health", (_, res) =>
-  res.json({ ok: true, text_model: TEXT_MODEL, video_model: VIDEO_MODEL, keys: { anthropic: !!ANTHROPIC_API_KEY, fal: !!FAL_KEY } })
+  res.json({ ok: true, text_model: TEXT_MODEL, video_model: VIDEO_MODEL, keys: { gemini: !!GEMINI_API_KEY, fal: !!FAL_KEY } })
 );
 
 app.listen(PORT, () => console.log(`🚀 Video Fabrikasi: http://localhost:${PORT}`));
