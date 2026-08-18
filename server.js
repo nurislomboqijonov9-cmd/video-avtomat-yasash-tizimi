@@ -24,6 +24,7 @@ const PORT = process.env.PORT || 3000;
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FAL_KEY = process.env.FAL_KEY;
+const AISHA_API_KEY = process.env.AISHA_API_KEY || ""; // ovoz uchun (aisha.group)
 
 const TEXT_MODEL = process.env.TEXT_MODEL || "gemini-2.5-flash";
 const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-video";
@@ -77,6 +78,29 @@ async function callAI(system, user, maxTokens = 3000) {
   return text;
 }
 async function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+
+// Aisha (o'zbekcha ovoz) — matnni ovozga aylantiradi, WAV bufer qaytaradi
+const AISHA_MOODS = ["Neutral", "Cheerful", "Happy", "Sad"];
+async function aishaTTS(text, mood) {
+  const m = AISHA_MOODS.includes(mood) ? mood : "Neutral";
+  const form = new FormData();
+  form.append("transcript", String(text).slice(0, 1000));
+  form.append("language", "uz");
+  form.append("model", "Gulnoza");
+  form.append("mood", m);
+  form.append("speed", "1.0");
+  const r = await fetch("https://back.aisha.group/api/v1/tts/post/", {
+    method: "POST",
+    headers: { "X-Api-Key": AISHA_API_KEY },
+    body: form,
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || d.error || ("Aisha " + r.status));
+  const ap = d.audio_path;
+  if (!ap) throw new Error("audio_path yo'q");
+  const buf = Buffer.from(await (await fetch("https://back.aisha.group" + ap)).arrayBuffer());
+  return buf;
+}
 
 function parseJson(t) {
   t = (t || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
@@ -242,14 +266,17 @@ app.post("/stitch", requireAuth, async (req, res) => {
 
     const finalName = `${project.replace(/[^a-z0-9]/gi, "_")}_${clean}.mp4`;
     const finalPath = path.join(OUT_DIR, finalName);
+    const silentPath = path.join(OUT_DIR, "silent_" + clean + ".mp4");
+
+    // Har bir klip davomiyligini o'lchaymiz (ovoz vaqti uchun ham kerak)
+    const durs = [];
+    for (const c of clips) durs.push(await getDuration(c));
 
     // --- 1) Silliq o'tishlar (crossfade) bilan ulashga urinamiz ---
     let stitched = false;
+    let t = 0.4;                          // o'tish davomiyligi (soniya)
     if (clips.length > 1) {
       try {
-        const durs = [];
-        for (const c of clips) durs.push(await getDuration(c));
-        let t = 0.4;                       // o'tish davomiyligi (soniya)
         const minDur = Math.min(...durs);
         if (minDur < t * 2) t = Math.max(0.15, minDur / 3);
 
@@ -273,7 +300,7 @@ app.post("/stitch", requireAuth, async (req, res) => {
 
         await runFfmpeg(["-y", ...inputs, "-filter_complex", filter,
           "-map", "[vout]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
-          "-movflags", "+faststart", finalPath]);
+          "-movflags", "+faststart", silentPath]);
         stitched = true;
       } catch (e) {
         console.log("crossfade ishlamadi, oddiy usulga o'tamiz:", e.message);
@@ -286,8 +313,46 @@ app.post("/stitch", requireAuth, async (req, res) => {
       const listFile = path.join(workDir, "list.txt");
       fs.writeFileSync(listFile, clips.map((c) => `file '${c}'`).join("\n"));
       await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listFile,
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", finalPath]);
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", silentPath]);
     }
+
+    // --- 3) OVOZ: dialoglarni Aisha bilan ovozga aylantirib qo'shamiz ---
+    const st = [0];
+    for (let i = 1; i < clips.length; i++) st[i] = st[i - 1] + durs[i - 1] - (stitched ? t : 0);
+
+    const frames = Array.isArray(req.body.frames) ? req.body.frames : [];
+    const spoken = frames.filter((f) => f && f.dialog && String(f.dialog).trim());
+    let audioDone = false;
+    if (AISHA_API_KEY && spoken.length) {
+      try {
+        const voices = [];
+        for (const f of frames) {
+          if (!f.dialog || !String(f.dialog).trim()) continue;
+          const idx = (f.n || 1) - 1;
+          if (idx < 0 || idx >= clips.length) continue;
+          try {
+            const buf = await aishaTTS(String(f.dialog), f.mood);
+            const wav = path.join(workDir, `voice_${String(f.n).padStart(3, "0")}.wav`);
+            fs.writeFileSync(wav, buf);
+            voices.push({ startMs: Math.round((st[idx] || 0) * 1000) + 250, wav });
+          } catch (e) { console.log("TTS xato #" + f.n + ":", e.message); }
+        }
+        if (voices.length) {
+          const inputs = ["-i", silentPath];
+          voices.forEach((v) => inputs.push("-i", v.wav));
+          let fc = "";
+          voices.forEach((v, i) => { fc += `[${i + 1}:a]adelay=${v.startMs}|${v.startMs}[a${i}];`; });
+          fc += voices.map((_, i) => `[a${i}]`).join("") + `amix=inputs=${voices.length}:normalize=0[aout]`;
+          await runFfmpeg(["-y", ...inputs, "-filter_complex", fc,
+            "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac",
+            "-movflags", "+faststart", finalPath]);
+          audioDone = true;
+        }
+      } catch (e) { console.log("ovoz qo'shishda umumiy xato:", e.message); }
+    }
+
+    if (audioDone) { try { fs.unlinkSync(silentPath); } catch (e) {} }
+    else { fs.renameSync(silentPath, finalPath); }
 
     // Tarixga yozamiz (yig'ilib boradigan ro'yxat)
     try {
@@ -316,7 +381,7 @@ app.get("/history", requireAuth, (_, res) => {
 });
 
 app.get("/health", (_, res) =>
-  res.json({ ok: true, text_model: TEXT_MODEL, video_model: VIDEO_MODEL, keys: { gemini: !!GEMINI_API_KEY, fal: !!FAL_KEY } })
+  res.json({ ok: true, text_model: TEXT_MODEL, video_model: VIDEO_MODEL, keys: { gemini: !!GEMINI_API_KEY, fal: !!FAL_KEY, aisha: !!AISHA_API_KEY } })
 );
 
 app.listen(PORT, () => console.log(`🚀 Video Fabrikasi: http://localhost:${PORT}`));
