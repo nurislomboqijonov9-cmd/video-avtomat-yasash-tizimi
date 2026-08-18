@@ -30,6 +30,8 @@ const TEXT_MODEL = process.env.TEXT_MODEL || "gemini-2.5-flash";
 const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-video";
 // Rasm-orqali-video (zanjir usuli uchun) — t2v modeldan avtomatik hosil qilamiz
 const VIDEO_MODEL_I2V = process.env.VIDEO_MODEL_I2V || VIDEO_MODEL.replace("text-to-video", "image-to-video");
+// Personaj bir xilligi uchun: Nano Banana (referensdan yangi sahna rasmi yasaydi)
+const IMAGE_EDIT_MODEL = process.env.IMAGE_EDIT_MODEL || "fal-ai/nano-banana/edit";
 
 if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 
@@ -81,6 +83,19 @@ async function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 // Aisha (o'zbekcha ovoz) — matnni ovozga aylantiradi, WAV bufer qaytaradi
 const AISHA_MOODS = ["Neutral", "Cheerful", "Happy", "Sad"];
+// fal.ai chaqiruvi (3 marta qayta urinish bilan)
+async function falGen(model, input) {
+  let last = null;
+  for (let a = 1; a <= 3; a++) {
+    try { return await fal.subscribe(model, { input, logs: false }); }
+    catch (e) { last = e; if (a < 3) await sleep(2500 * a); }
+  }
+  throw last || new Error("fal xatosi");
+}
+function videoUrlOf(r){ return r?.data?.video?.url || r?.data?.videos?.[0]?.url || r?.video?.url; }
+function imageUrlOf(r){ return r?.data?.images?.[0]?.url || r?.images?.[0]?.url || r?.data?.image?.url; }
+async function saveFrom(url, filePath){ fs.writeFileSync(filePath, Buffer.from(await (await fetch(url)).arrayBuffer())); }
+
 async function aishaTTS(text, mood) {
   const m = AISHA_MOODS.includes(mood) ? mood : "Neutral";
   const form = new FormData();
@@ -194,64 +209,62 @@ app.post("/clip", requireAuth, async (req, res) => {
     const clean = jobId.replace(/[^a-z0-9]/gi, "");
     const workDir = path.join(OUT_DIR, "work_" + clean);
     fs.mkdirSync(workDir, { recursive: true });
-
-    // Personaj tavsifini har promt oldiga qo'shamiz (qo'shimcha barqarorlik)
-    const charPrefix = (characters && characters.length)
-      ? "Consistent characters, keep EXACTLY the same appearance: " +
-        characters.map(c => c.name + " — " + c.description).join(". ") + ". SCENE: "
-      : "";
-    const finalPrompt = charPrefix + frame.visual_prompt;
-
-    // ZANJIR + DOIMIY REFERENS:
-    //  - 1-kadr: oddiy yasaladi va uning BOSHIDAN doimiy referens (ref.png) olinadi
-    //  - keyingi kadrlar: DOIMIY referensga bog'lanadi (personaj/obyekt yo'qolmasligi uchun)
     const base = (req.headers["x-forwarded-proto"] || "https") + "://" + req.headers.host;
-    const refPng = path.join(workDir, "ref.png");
-    let useImage = false, imageUrl = null;
-    if (frame.n > 1 && fs.existsSync(refPng)) {
-      imageUrl = `${base}/output/work_${clean}/ref.png`;  // doimiy referens
-      useImage = true;
-    }
-    const model = useImage ? VIDEO_MODEL_I2V : VIDEO_MODEL;
-    const input = useImage ? { image_url: imageUrl, prompt: finalPrompt } : { prompt: finalPrompt };
 
-    // Xato bo'lsa 3 martagacha qayta urinamiz
-    let url = null, lastErr = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const result = await fal.subscribe(model, { input, logs: false });
-        url = result?.data?.video?.url || result?.data?.videos?.[0]?.url || result?.video?.url;
-        if (url) break;
-        throw new Error("video URL topilmadi");
-      } catch (err) {
-        lastErr = err;
-        if (attempt < 3) await sleep(3000 * attempt);
-      }
-    }
-    if (!url) throw lastErr || new Error("video yasalmadi");
+    const charBible = (characters && characters.length)
+      ? characters.map(c => c.name + " — " + c.description).join(". ")
+      : "";
+    const scenePrompt = (charBible ? "Characters: " + charBible + ". SCENE: " : "") + frame.visual_prompt;
 
-    // Klipni saqlaymiz
     const fileName = `clip_${String(frame.n).padStart(3, "0")}.mp4`;
     const clipPath = path.join(workDir, fileName);
-    fs.writeFileSync(clipPath, Buffer.from(await (await fetch(url)).arrayBuffer()));
+    const charrefPath = path.join(workDir, "charref.png");
+    const charrefExists = fs.existsSync(charrefPath);
 
-    // 1-kadr bo'lsa: uning BOSHIDAN (obyekt yaxshi ko'rinadigan joydan) doimiy referens olamiz
-    if (frame.n === 1) {
+    let mode = "boshlang'ich";
+
+    if (frame.n === 1 || !charrefExists) {
+      // 1-KADR: matndan video. Keyin personaj REFERENS rasmi olinadi.
+      const r = await falGen(VIDEO_MODEL, { prompt: scenePrompt });
+      const url = videoUrlOf(r);
+      if (!url) throw new Error("video URL topilmadi");
+      await saveFrom(url, clipPath);
+      // referens rasmni ajratib olamiz (personaj yaxshi ko'rinadigan o'rtadan)
+      try { await runFfmpeg(["-y", "-ss", "1", "-i", clipPath, "-frames:v", "1", charrefPath]); }
+      catch (e) { try { await runFfmpeg(["-y", "-i", clipPath, "-frames:v", "1", charrefPath]); } catch (e2) {} }
+      mode = "boshlang'ich";
+    } else {
+      // KEYINGI KADRLAR: Nano Banana referensdan yangi sahna rasmi yasaydi (personaj bir xil)
+      const charrefUrl = `${base}/output/work_${clean}/charref.png`;
+      let keyframeUrl = null;
       try {
-        // 1-soniyadagi kadr — odatda asosiy obyekt to'liq ko'rinadi
-        await runFfmpeg(["-y", "-ss", "1", "-i", clipPath, "-frames:v", "1", refPng]);
-      } catch (e) {
-        // agar 1s bo'lmasa, boshidan olamiz
-        try { await runFfmpeg(["-y", "-i", clipPath, "-frames:v", "1", refPng]); } catch (e2) {}
+        const editPrompt = "Keep the EXACT same character(s), same faces, same clothing and age as in the reference image. Do not change who they are. New scene and action: " + frame.visual_prompt + ". Cinematic, high detail.";
+        const ir = await falGen(IMAGE_EDIT_MODEL, { prompt: editPrompt, image_urls: [charrefUrl] });
+        keyframeUrl = imageUrlOf(ir);
+      } catch (e) { keyframeUrl = null; }
+
+      if (keyframeUrl) {
+        // yangi sahna rasmini videoga aylantiramiz (harakat qo'shamiz)
+        const r = await falGen(VIDEO_MODEL_I2V, { image_url: keyframeUrl, prompt: frame.visual_prompt + " Natural motion and camera movement, cinematic." });
+        const url = videoUrlOf(r);
+        if (!url) throw new Error("video URL topilmadi");
+        await saveFrom(url, clipPath);
+        mode = "referens";
+      } else {
+        // Zaxira: Nano Banana ishlamasa, matndan video
+        const r = await falGen(VIDEO_MODEL, { prompt: scenePrompt });
+        const url = videoUrlOf(r);
+        if (!url) throw new Error("video URL topilmadi");
+        await saveFrom(url, clipPath);
+        mode = "zaxira";
       }
     }
 
-    res.json({ ok: true, n: frame.n, clipUrl: `/output/work_${clean}/${fileName}`, mode: useImage ? "zanjir" : "boshlang'ich" });
+    res.json({ ok: true, n: frame.n, clipUrl: `/output/work_${clean}/${fileName}`, mode });
   } catch (e) {
     res.status(500).json({ error: e.message, n: req.body?.frame?.n });
   }
 });
-
 app.post("/stitch", requireAuth, async (req, res) => {
   try {
     const { jobId, project = "video" } = req.body;
