@@ -66,6 +66,29 @@ function parseJson(t) {
   return JSON.parse(t);
 }
 
+// clip davomiyligini o'lchash (ffmpeg orqali)
+function getDuration(file) {
+  return new Promise((resolve) => {
+    const ff = spawn(ffmpegPath, ["-i", file]);
+    let err = "";
+    ff.stderr.on("data", (d) => (err += d));
+    ff.on("close", () => {
+      const m = err.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+      resolve(m ? (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]) : 5);
+    });
+    ff.on("error", () => resolve(5));
+  });
+}
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn(ffmpegPath, args);
+    let err = "";
+    ff.stderr.on("data", (d) => (err += d));
+    ff.on("close", (c) => (c === 0 ? resolve() : reject(new Error("ffmpeg: " + err.slice(-400)))));
+    ff.on("error", (e) => reject(e));
+  });
+}
+
 app.post("/scenario", async (req, res) => {
   try {
     if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY o'rnatilmagan (Railway Variables).");
@@ -75,7 +98,12 @@ app.post("/scenario", async (req, res) => {
 
     const planSys = `You are a professional AI-video pipeline director. Return ONLY valid JSON (no markdown):
 {"title":"catchy title","logline":"1-2 sentence summary","characters":[{"name":"Name","description":"FIXED detailed look: age, hair, build, face, signature clothing — reused every shot for consistency"}],"beats":["short sentence for shot 1","..."]}
-Rules: exactly ${frameCount} beats (one per ${FRAME_LEN}s shot). Clear beginning, middle, emotional payoff. 2-4 characters.`;
+Rules: exactly ${frameCount} beats (one per ${FRAME_LEN}s shot). 2-4 characters.
+CONTINUITY IS CRITICAL — the video has NO on-screen text and must feel like ONE continuous short film, not disconnected clips:
+- Each beat continues DIRECTLY from the previous one (clear cause and effect).
+- Keep the SAME location and time-of-day across consecutive shots; change scene only when the story truly moves, and minimize scene changes.
+- Character appearance stays IDENTICAL throughout.
+- One clear emotional arc: setup -> development -> payoff.`;
     const plan = parseJson(await callAI(planSys, `BRIEF: ${brief}\nSTYLE: ${style}\nShots: ${frameCount}`, 3000));
 
     const characters = plan.characters || [];
@@ -169,26 +197,58 @@ app.post("/stitch", async (req, res) => {
     const workDir = path.join(OUT_DIR, "work_" + clean);
     if (!fs.existsSync(workDir)) throw new Error("kliplar topilmadi");
 
-    const clips = fs.readdirSync(workDir).filter((f) => f.endsWith(".mp4")).sort();
+    const clips = fs.readdirSync(workDir).filter((f) => f.endsWith(".mp4")).sort()
+      .map((c) => path.join(workDir, c));
     if (!clips.length) throw new Error("birorta klip yo'q");
-
-    const listFile = path.join(workDir, "list.txt");
-    fs.writeFileSync(listFile, clips.map((c) => `file '${path.join(workDir, c)}'`).join("\n"));
 
     const finalName = `${project.replace(/[^a-z0-9]/gi, "_")}_${clean}.mp4`;
     const finalPath = path.join(OUT_DIR, finalName);
 
-    await new Promise((resolve, reject) => {
-      const ff = spawn(ffmpegPath, [
-        "-y", "-f", "concat", "-safe", "0", "-i", listFile,
-        "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", finalPath,
-      ]);
-      let err = "";
-      ff.stderr.on("data", (d) => (err += d));
-      ff.on("close", (c) => (c === 0 ? resolve() : reject(new Error("ffmpeg: " + err.slice(-400)))));
-      ff.on("error", (e) => reject(e));
-    });
+    // --- 1) Silliq o'tishlar (crossfade) bilan ulashga urinamiz ---
+    let stitched = false;
+    if (clips.length > 1) {
+      try {
+        const durs = [];
+        for (const c of clips) durs.push(await getDuration(c));
+        let t = 0.4;                       // o'tish davomiyligi (soniya)
+        const minDur = Math.min(...durs);
+        if (minDur < t * 2) t = Math.max(0.15, minDur / 3);
+
+        const inputs = [];
+        clips.forEach((c) => inputs.push("-i", c));
+
+        // Har bir klipni bir xil formatga keltiramiz (xfade shart qiladi)
+        let filter = "";
+        clips.forEach((_, i) => {
+          filter += `[${i}:v]settb=AVTB,fps=24,format=yuv420p,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v${i}];`;
+        });
+        // xfade zanjiri
+        let prev = "v0", off = 0;
+        for (let i = 1; i < clips.length; i++) {
+          off += durs[i - 1] - t;
+          const out = i === clips.length - 1 ? "vout" : `vx${i}`;
+          filter += `[${prev}][v${i}]xfade=transition=fade:duration=${t}:offset=${off.toFixed(3)}[${out}];`;
+          prev = out;
+        }
+        filter = filter.replace(/;$/, "");
+
+        await runFfmpeg(["-y", ...inputs, "-filter_complex", filter,
+          "-map", "[vout]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+          "-movflags", "+faststart", finalPath]);
+        stitched = true;
+      } catch (e) {
+        console.log("crossfade ishlamadi, oddiy usulga o'tamiz:", e.message);
+        stitched = false;
+      }
+    }
+
+    // --- 2) Zaxira: oddiy ulash (agar crossfade ishlamasa yoki 1 ta klip) ---
+    if (!stitched) {
+      const listFile = path.join(workDir, "list.txt");
+      fs.writeFileSync(listFile, clips.map((c) => `file '${c}'`).join("\n"));
+      await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listFile,
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", finalPath]);
+    }
 
     res.json({ ok: true, url: `/output/${finalName}` });
   } catch (e) {
