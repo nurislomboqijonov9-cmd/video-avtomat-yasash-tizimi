@@ -34,6 +34,23 @@ if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 
 const app = express();
 app.use(express.json({ limit: "6mb" }));
+
+// ---- PAROL HIMOYASI ----
+// Railway Variables'da APP_PASSWORD qo'ysang, sayt parol so'raydi.
+// Qo'ymasang — hammaga ochiq (parolsiz) ishlayveradi.
+const APP_PASSWORD = process.env.APP_PASSWORD || "";
+app.post("/login", (req, res) => {
+  if (!APP_PASSWORD) return res.json({ ok: true }); // parol yo'q — ochiq
+  if (req.body && req.body.password === APP_PASSWORD) return res.json({ ok: true });
+  res.status(401).json({ error: "Parol noto'g'ri" });
+});
+// Video yasaydigan yo'llarni parol bilan himoyalaymiz (pulni himoya qiladi)
+function requireAuth(req, res, next) {
+  if (!APP_PASSWORD) return next();
+  const p = req.headers["x-app-password"];
+  if (p === APP_PASSWORD) return next();
+  res.status(401).json({ error: "Ruxsat yo'q — avval parol kiriting" });
+}
 app.use(express.static(path.join(__dirname, "public")));
 
 const OUT_DIR = path.join(__dirname, "output");
@@ -91,7 +108,7 @@ function runFfmpeg(args) {
   });
 }
 
-app.post("/scenario", async (req, res) => {
+app.post("/scenario", requireAuth, async (req, res) => {
   try {
     if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY o'rnatilmagan (Railway Variables).");
     const { brief, style, dur = 60, lang = "Uzbek (Latin script)" } = req.body;
@@ -144,7 +161,7 @@ Return ONLY JSON: {"frames":[{"n":<int>,"location":"scene name","visual_prompt":
   }
 });
 
-app.post("/clip", async (req, res) => {
+app.post("/clip", requireAuth, async (req, res) => {
   try {
     if (!FAL_KEY) throw new Error("FAL_KEY o'rnatilmagan (Railway Variables).");
     const { jobId, frame, characters } = req.body;
@@ -161,13 +178,14 @@ app.post("/clip", async (req, res) => {
       : "";
     const finalPrompt = charPrefix + frame.visual_prompt;
 
-    // ZANJIR USULI: oldingi kadrning oxirgi tasviri bo'lsa, undan davom etamiz
-    const prevName = `last_${String(frame.n - 1).padStart(3, "0")}.png`;
-    const prevPng = path.join(workDir, prevName);
+    // ZANJIR + DOIMIY REFERENS:
+    //  - 1-kadr: oddiy yasaladi va uning BOSHIDAN doimiy referens (ref.png) olinadi
+    //  - keyingi kadrlar: DOIMIY referensga bog'lanadi (personaj/obyekt yo'qolmasligi uchun)
+    const base = (req.headers["x-forwarded-proto"] || "https") + "://" + req.headers.host;
+    const refPng = path.join(workDir, "ref.png");
     let useImage = false, imageUrl = null;
-    if (frame.n > 1 && fs.existsSync(prevPng)) {
-      const base = (req.headers["x-forwarded-proto"] || "https") + "://" + req.headers.host;
-      imageUrl = `${base}/output/work_${clean}/${prevName}`;
+    if (frame.n > 1 && fs.existsSync(refPng)) {
+      imageUrl = `${base}/output/work_${clean}/ref.png`;  // doimiy referens
       useImage = true;
     }
     const model = useImage ? VIDEO_MODEL_I2V : VIDEO_MODEL;
@@ -193,11 +211,16 @@ app.post("/clip", async (req, res) => {
     const clipPath = path.join(workDir, fileName);
     fs.writeFileSync(clipPath, Buffer.from(await (await fetch(url)).arrayBuffer()));
 
-    // Keyingi kadr uchun shu klipning OXIRGI tasvirini ajratib olamiz
-    try {
-      const outPng = path.join(workDir, `last_${String(frame.n).padStart(3, "0")}.png`);
-      await runFfmpeg(["-y", "-sseof", "-0.3", "-i", clipPath, "-frames:v", "1", outPng]);
-    } catch (e) { /* muhim emas — keyingisi oddiy usulda yasaladi */ }
+    // 1-kadr bo'lsa: uning BOSHIDAN (obyekt yaxshi ko'rinadigan joydan) doimiy referens olamiz
+    if (frame.n === 1) {
+      try {
+        // 1-soniyadagi kadr — odatda asosiy obyekt to'liq ko'rinadi
+        await runFfmpeg(["-y", "-ss", "1", "-i", clipPath, "-frames:v", "1", refPng]);
+      } catch (e) {
+        // agar 1s bo'lmasa, boshidan olamiz
+        try { await runFfmpeg(["-y", "-i", clipPath, "-frames:v", "1", refPng]); } catch (e2) {}
+      }
+    }
 
     res.json({ ok: true, n: frame.n, clipUrl: `/output/work_${clean}/${fileName}`, mode: useImage ? "zanjir" : "boshlang'ich" });
   } catch (e) {
@@ -205,7 +228,7 @@ app.post("/clip", async (req, res) => {
   }
 });
 
-app.post("/stitch", async (req, res) => {
+app.post("/stitch", requireAuth, async (req, res) => {
   try {
     const { jobId, project = "video" } = req.body;
     if (!jobId) throw new Error("jobId yo'q");
@@ -266,9 +289,29 @@ app.post("/stitch", async (req, res) => {
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", finalPath]);
     }
 
+    // Tarixga yozamiz (yig'ilib boradigan ro'yxat)
+    try {
+      const histFile = path.join(OUT_DIR, "history.json");
+      let hist = [];
+      if (fs.existsSync(histFile)) hist = JSON.parse(fs.readFileSync(histFile, "utf8"));
+      hist.unshift({ title: project, url: `/output/${finalName}`, date: new Date().toISOString() });
+      fs.writeFileSync(histFile, JSON.stringify(hist.slice(0, 200), null, 2));
+    } catch (e) {}
+
     res.json({ ok: true, url: `/output/${finalName}` });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Videolar tarixini beradi
+app.get("/history", requireAuth, (_, res) => {
+  try {
+    const histFile = path.join(OUT_DIR, "history.json");
+    const hist = fs.existsSync(histFile) ? JSON.parse(fs.readFileSync(histFile, "utf8")) : [];
+    res.json({ items: hist });
+  } catch (e) {
+    res.json({ items: [] });
   }
 });
 
