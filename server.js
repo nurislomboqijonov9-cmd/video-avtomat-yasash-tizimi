@@ -57,6 +57,8 @@ async function callAI(system, user, maxTokens = 3000) {
   if (!text) throw new Error("Gemini bo'sh javob qaytardi");
   return text;
 }
+async function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+
 function parseJson(t) {
   t = (t || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
   const s = t.indexOf("{"), e = t.lastIndexOf("}");
@@ -121,16 +123,33 @@ app.post("/clip", async (req, res) => {
     const workDir = path.join(OUT_DIR, "work_" + jobId.replace(/[^a-z0-9]/gi, ""));
     fs.mkdirSync(workDir, { recursive: true });
 
-    // Faqat promt yuboramiz — bu eng ishonchli, hamma modelga mos keladi
-    const result = await fal.subscribe(VIDEO_MODEL, {
-      input: { prompt: frame.visual_prompt },
-      logs: false,
-    });
-    const url =
-      result?.data?.video?.url ||
-      result?.data?.videos?.[0]?.url ||
-      result?.video?.url;
-    if (!url) throw new Error("video URL topilmadi");
+    // Personaj bir xilligi uchun: har kadr promti oldiga to'liq tavsif qo'shamiz
+    const charPrefix = (req.body.characters && req.body.characters.length)
+      ? "Consistent characters (keep EXACTLY the same appearance every time): " +
+        req.body.characters.map(c => c.name + " — " + c.description).join(". ") + ". SCENE: "
+      : "";
+    const finalPrompt = charPrefix + frame.visual_prompt;
+
+    // Forbidden/rate-limit bo'lsa 2 marta qayta urinamiz (orasida kutib)
+    let url = null, lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const result = await fal.subscribe(VIDEO_MODEL, {
+          input: { prompt: finalPrompt },
+          logs: false,
+        });
+        url =
+          result?.data?.video?.url ||
+          result?.data?.videos?.[0]?.url ||
+          result?.video?.url;
+        if (url) break;
+        throw new Error("video URL topilmadi");
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 3) await sleep(3000 * attempt); // 3s, keyin 6s kutamiz
+      }
+    }
+    if (!url) throw lastErr || new Error("video yasalmadi");
 
     const buf = Buffer.from(await (await fetch(url)).arrayBuffer());
     const fileName = `clip_${String(frame.n).padStart(3, "0")}.mp4`;
