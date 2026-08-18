@@ -232,7 +232,7 @@ $("genAll").onclick=async()=>{
     vs.innerHTML='<div class="genwave"></div>video yasalyapti…';
     try{
       const r=await fetch("/clip",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({jobId,frame:f,aspect_ratio:STATE.aspect_ratio})});
+        body:JSON.stringify({jobId,frame:f,aspect_ratio:STATE.aspect_ratio,characters:STATE.characters})});
       const d=await r.json();
       if(d.error)throw new Error(d.error);
       tag.className="vtag done";tag.textContent="✓ ГОТОВО";
