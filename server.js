@@ -26,7 +26,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FAL_KEY = process.env.FAL_KEY;
 
 const TEXT_MODEL = process.env.TEXT_MODEL || "gemini-2.5-flash";
-const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-2/text-to-video";
+const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-video";
 
 if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 
@@ -121,8 +121,9 @@ app.post("/clip", async (req, res) => {
     const workDir = path.join(OUT_DIR, "work_" + jobId.replace(/[^a-z0-9]/gi, ""));
     fs.mkdirSync(workDir, { recursive: true });
 
+    // Faqat promt yuboramiz — bu eng ishonchli, hamma modelga mos keladi
     const result = await fal.subscribe(VIDEO_MODEL, {
-      input: { prompt: frame.visual_prompt, aspect_ratio, resolution: "720p" },
+      input: { prompt: frame.visual_prompt },
       logs: false,
     });
     const url =
