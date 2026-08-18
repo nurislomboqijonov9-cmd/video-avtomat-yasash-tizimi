@@ -27,6 +27,8 @@ const FAL_KEY = process.env.FAL_KEY;
 
 const TEXT_MODEL = process.env.TEXT_MODEL || "gemini-2.5-flash";
 const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-video";
+// Rasm-orqali-video (zanjir usuli uchun) — t2v modeldan avtomatik hosil qilamiz
+const VIDEO_MODEL_I2V = process.env.VIDEO_MODEL_I2V || VIDEO_MODEL.replace("text-to-video", "image-to-video");
 
 if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 
@@ -145,45 +147,59 @@ Return ONLY JSON: {"frames":[{"n":<int>,"location":"scene name","visual_prompt":
 app.post("/clip", async (req, res) => {
   try {
     if (!FAL_KEY) throw new Error("FAL_KEY o'rnatilmagan (Railway Variables).");
-    const { jobId, frame, aspect_ratio = "16:9" } = req.body;
+    const { jobId, frame, characters } = req.body;
     if (!jobId || !frame) throw new Error("jobId yoki frame yo'q");
 
-    const workDir = path.join(OUT_DIR, "work_" + jobId.replace(/[^a-z0-9]/gi, ""));
+    const clean = jobId.replace(/[^a-z0-9]/gi, "");
+    const workDir = path.join(OUT_DIR, "work_" + clean);
     fs.mkdirSync(workDir, { recursive: true });
 
-    // Personaj bir xilligi uchun: har kadr promti oldiga to'liq tavsif qo'shamiz
-    const charPrefix = (req.body.characters && req.body.characters.length)
-      ? "Consistent characters (keep EXACTLY the same appearance every time): " +
-        req.body.characters.map(c => c.name + " — " + c.description).join(". ") + ". SCENE: "
+    // Personaj tavsifini har promt oldiga qo'shamiz (qo'shimcha barqarorlik)
+    const charPrefix = (characters && characters.length)
+      ? "Consistent characters, keep EXACTLY the same appearance: " +
+        characters.map(c => c.name + " — " + c.description).join(". ") + ". SCENE: "
       : "";
     const finalPrompt = charPrefix + frame.visual_prompt;
 
-    // Forbidden/rate-limit bo'lsa 2 marta qayta urinamiz (orasida kutib)
+    // ZANJIR USULI: oldingi kadrning oxirgi tasviri bo'lsa, undan davom etamiz
+    const prevName = `last_${String(frame.n - 1).padStart(3, "0")}.png`;
+    const prevPng = path.join(workDir, prevName);
+    let useImage = false, imageUrl = null;
+    if (frame.n > 1 && fs.existsSync(prevPng)) {
+      const base = (req.headers["x-forwarded-proto"] || "https") + "://" + req.headers.host;
+      imageUrl = `${base}/output/work_${clean}/${prevName}`;
+      useImage = true;
+    }
+    const model = useImage ? VIDEO_MODEL_I2V : VIDEO_MODEL;
+    const input = useImage ? { image_url: imageUrl, prompt: finalPrompt } : { prompt: finalPrompt };
+
+    // Xato bo'lsa 3 martagacha qayta urinamiz
     let url = null, lastErr = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const result = await fal.subscribe(VIDEO_MODEL, {
-          input: { prompt: finalPrompt },
-          logs: false,
-        });
-        url =
-          result?.data?.video?.url ||
-          result?.data?.videos?.[0]?.url ||
-          result?.video?.url;
+        const result = await fal.subscribe(model, { input, logs: false });
+        url = result?.data?.video?.url || result?.data?.videos?.[0]?.url || result?.video?.url;
         if (url) break;
         throw new Error("video URL topilmadi");
       } catch (err) {
         lastErr = err;
-        if (attempt < 3) await sleep(3000 * attempt); // 3s, keyin 6s kutamiz
+        if (attempt < 3) await sleep(3000 * attempt);
       }
     }
     if (!url) throw lastErr || new Error("video yasalmadi");
 
-    const buf = Buffer.from(await (await fetch(url)).arrayBuffer());
+    // Klipni saqlaymiz
     const fileName = `clip_${String(frame.n).padStart(3, "0")}.mp4`;
-    fs.writeFileSync(path.join(workDir, fileName), buf);
+    const clipPath = path.join(workDir, fileName);
+    fs.writeFileSync(clipPath, Buffer.from(await (await fetch(url)).arrayBuffer()));
 
-    res.json({ ok: true, n: frame.n, clipUrl: `/output/work_${jobId.replace(/[^a-z0-9]/gi, "")}/${fileName}` });
+    // Keyingi kadr uchun shu klipning OXIRGI tasvirini ajratib olamiz
+    try {
+      const outPng = path.join(workDir, `last_${String(frame.n).padStart(3, "0")}.png`);
+      await runFfmpeg(["-y", "-sseof", "-0.3", "-i", clipPath, "-frames:v", "1", outPng]);
+    } catch (e) { /* muhim emas — keyingisi oddiy usulda yasaladi */ }
+
+    res.json({ ok: true, n: frame.n, clipUrl: `/output/work_${clean}/${fileName}`, mode: useImage ? "zanjir" : "boshlang'ich" });
   } catch (e) {
     res.status(500).json({ error: e.message, n: req.body?.frame?.n });
   }
