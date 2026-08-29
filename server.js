@@ -69,7 +69,7 @@ const VIDEO_PROFILES = {
 if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 
 const app = express();
-app.use(express.json({ limit: "6mb" }));
+app.use(express.json({ limit: "25mb" }));
 
 // ---- PAROL HIMOYASI ----
 // Railway Variables'da APP_PASSWORD qo'ysang, sayt parol so'raydi.
@@ -305,7 +305,18 @@ app.post("/clip", requireAuth, async (req, res) => {
     const charrefExists = fs.existsSync(charrefPath);
 
     const quality = (req.body.quality === "veo" || VIDEO_PROFILES[req.body.quality]) ? req.body.quality : "tejamkor";
+    const useConsistency = req.body.consistency !== false; // personaj bir xilligi (default yoniq)
+    const userImageUrl = req.body.userImageUrl || null;    // foydalanuvchi yuklagan mahsulot/personaj rasmi
     let mode = quality;
+
+    // Agar foydalanuvchi rasm yuklagan bo'lsa — uni doimiy referens qilamiz (1-marta)
+    if (userImageUrl && !charrefExists) {
+      try {
+        const buf = Buffer.from(await (await fetch(userImageUrl)).arrayBuffer());
+        fs.writeFileSync(charrefPath, buf);
+      } catch (e) { console.log("user rasm yuklashda xato:", e.message); }
+    }
+    const hasRef = fs.existsSync(charrefPath);
 
     if (quality === "veo") {
       // GOOGLE VEO ($300 kreditdan). 1-kadr matndan, keyingilar Nano Banana referens rasmidan.
@@ -328,21 +339,27 @@ app.post("/clip", requireAuth, async (req, res) => {
       mode = imgBuf ? "veo+referens" : "veo";
     } else {
     const prof = VIDEO_PROFILES[quality];
+    // Referensdan foydalanamizmi? (personaj bir xilligi yoniq VA referens bor VA 1-kadr emas yoki rasm yuklangan)
+    const useRef = useConsistency && hasRef && (frame.n > 1 || userImageUrl);
 
-    if (frame.n === 1 || !charrefExists) {
-      // 1-KADR: matndan video. Keyin personaj REFERENS rasmi olinadi.
+    if (!useRef) {
+      // Matndan video (arzonroq — Nano Banana ishlatilmaydi)
       const r = await falGen(prof.t2v, prof.t2vInput(scenePrompt));
       const url = videoUrlOf(r);
       if (!url) throw new Error("video URL topilmadi");
       await saveFrom(url, clipPath);
-      try { await runFfmpeg(["-y", "-ss", "1", "-i", clipPath, "-frames:v", "1", charrefPath]); }
-      catch (e) { try { await runFfmpeg(["-y", "-i", clipPath, "-frames:v", "1", charrefPath]); } catch (e2) {} }
+      // 1-kadr bo'lsa va bir xillik yoniq bo'lsa — referens rasmni saqlab qo'yamiz
+      if (frame.n === 1 && useConsistency && !userImageUrl) {
+        try { await runFfmpeg(["-y", "-ss", "1", "-i", clipPath, "-frames:v", "1", charrefPath]); }
+        catch (e) { try { await runFfmpeg(["-y", "-i", clipPath, "-frames:v", "1", charrefPath]); } catch (e2) {} }
+      }
+      mode = quality;
     } else {
-      // KEYINGI KADRLAR: Nano Banana referensdan yangi sahna rasmi (personaj bir xil)
+      // Nano Banana referensdan yangi sahna rasmi (personaj/mahsulot bir xil)
       const charrefUrl = `${base}/output/work_${clean}/charref.png`;
       let keyframeUrl = null;
       try {
-        const editPrompt = "Keep the EXACT same character(s), same faces, same clothing and age as in the reference image. Do not change who they are. New scene and action: " + frame.visual_prompt + ". Cinematic, high detail.";
+        const editPrompt = "Keep the EXACT same main subject/character/product, same appearance, from the reference image. New scene and action: " + frame.visual_prompt + ". Cinematic, high detail.";
         const ir = await falGen(IMAGE_EDIT_MODEL, { prompt: editPrompt, image_urls: [charrefUrl] });
         keyframeUrl = imageUrlOf(ir);
       } catch (e) { keyframeUrl = null; }
@@ -496,6 +513,26 @@ app.get("/history", requireAuth, (_, res) => {
     res.json({ items: hist });
   } catch (e) {
     res.json({ items: [] });
+  }
+});
+
+// Foydalanuvchi rasm yuklaydi (mahsulot/personaj) — base64, referens uchun
+app.post("/upload-image", requireAuth, (req, res) => {
+  try {
+    const { jobId, dataUrl } = req.body;
+    if (!jobId || !dataUrl) throw new Error("jobId yoki rasm yo'q");
+    const clean = jobId.replace(/[^a-z0-9]/gi, "");
+    const workDir = path.join(OUT_DIR, "work_" + clean);
+    fs.mkdirSync(workDir, { recursive: true });
+    const m = String(dataUrl).match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/);
+    if (!m) throw new Error("rasm formati noto'g'ri (png/jpg/webp bo'lsin)");
+    const buf = Buffer.from(m[2], "base64");
+    const imgPath = path.join(workDir, "userimg.png");
+    fs.writeFileSync(imgPath, buf);
+    const base = (req.headers["x-forwarded-proto"] || "https") + "://" + req.headers.host;
+    res.json({ ok: true, url: `${base}/output/work_${clean}/userimg.png` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
