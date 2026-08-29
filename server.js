@@ -192,7 +192,7 @@ CONTINUITY IS CRITICAL — the video has NO on-screen text and must feel like ON
 - Keep the SAME location and time-of-day across consecutive shots; change scene only when the story truly moves, and minimize scene changes.
 - Character appearance stays IDENTICAL throughout.
 - One clear emotional arc: setup -> development -> payoff.`;
-    const plan = parseJson(await callAI(planSys, `BRIEF: ${brief}\nSTYLE: ${style}\nShots: ${frameCount}`, 3000));
+    const plan = parseJson(await callAI(planSys, `BRIEF: ${brief}\nSTYLE: ${style}\n${auto ? "Choose the shot count yourself." : ("Shots: " + target)}`, 3000));
 
     const characters = plan.characters || [];
     let beats = plan.beats || [];
