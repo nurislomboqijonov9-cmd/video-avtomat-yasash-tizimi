@@ -26,12 +26,28 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FAL_KEY = process.env.FAL_KEY;
 const AISHA_API_KEY = process.env.AISHA_API_KEY || ""; // ovoz uchun (aisha.group)
 
-const TEXT_MODEL = process.env.TEXT_MODEL || "gemini-2.5-flash";
+const TEXT_MODEL = process.env.TEXT_MODEL || "gemini-3.6-flash";
 const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-video";
 // Rasm-orqali-video (zanjir usuli uchun) — t2v modeldan avtomatik hosil qilamiz
 const VIDEO_MODEL_I2V = process.env.VIDEO_MODEL_I2V || VIDEO_MODEL.replace("text-to-video", "image-to-video");
 // Personaj bir xilligi uchun: Nano Banana (referensdan yangi sahna rasmi yasaydi)
 const IMAGE_EDIT_MODEL = process.env.IMAGE_EDIT_MODEL || "fal-ai/nano-banana/edit";
+
+// Tanlanadigan video modellar (interfeysdan tanlanadi)
+const VIDEO_PROFILES = {
+  tejamkor: {
+    t2v: process.env.VIDEO_MODEL || "fal-ai/ltx-2.5/text-to-video/fast",
+    i2v: process.env.VIDEO_MODEL_I2V || (process.env.VIDEO_MODEL || "fal-ai/ltx-2.5/text-to-video/fast").replace("text-to-video", "image-to-video"),
+    t2vInput: (prompt) => ({ prompt }),
+    i2vInput: (imgUrl, prompt) => ({ image_url: imgUrl, prompt }),
+  },
+  professional: {
+    t2v: process.env.KLING_T2V || "fal-ai/kling-video/v2.1/master/text-to-video",
+    i2v: process.env.KLING_I2V || "fal-ai/kling-video/v2.6/pro/image-to-video",
+    t2vInput: (prompt) => ({ prompt, duration: "5", aspect_ratio: "16:9" }),
+    i2vInput: (imgUrl, prompt) => ({ start_image_url: imgUrl, prompt, duration: "5", generate_audio: false }),
+  },
+};
 
 if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 
@@ -146,17 +162,31 @@ function runFfmpeg(args) {
     ff.on("error", (e) => reject(e));
   });
 }
+// Har klipni AYNAN belgilangan soniyaga keltiramiz (uzun bo'lsa kesadi, qisqa bo'lsa oxirgi kadrni cho'zadi)
+async function forceDuration(clipPath, seconds) {
+  const tmp = clipPath + ".fix.mp4";
+  await runFfmpeg(["-y", "-i", clipPath,
+    "-filter_complex", `[0:v]tpad=stop_mode=clone:stop_duration=${seconds}[v]`,
+    "-map", "[v]", "-t", String(seconds),
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", "-r", "24",
+    "-movflags", "+faststart", tmp]);
+  fs.renameSync(tmp, clipPath);
+}
 
 app.post("/scenario", requireAuth, async (req, res) => {
   try {
     if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY o'rnatilmagan (Railway Variables).");
-    const { brief, style, dur = 60, lang = "Uzbek (Latin script)" } = req.body;
+    const { brief, style, dur = "auto", lang = "Uzbek (Latin script)" } = req.body;
     if (!brief) throw new Error("brief bo'sh");
-    const frameCount = Math.round(dur / FRAME_LEN);
+    const auto = String(dur) === "auto";
+    const target = auto ? null : Math.max(2, Math.round(dur / FRAME_LEN));
+    const countRule = auto
+      ? "Decide the BEST number of shots YOURSELF, between 2 and 8, based purely on how much story the idea naturally needs. A short/simple idea should get FEWER shots (even just 2-3) — do NOT stretch it. Return exactly that many beats, each a DISTINCT new moment. Never repeat a beat."
+      : ("The user wants EXACTLY " + target + " shots. EXPAND the idea into " + target + " DISTINCT beats by adding new story moments, actions, angles and developments so it naturally fills the length. CRITICAL: every beat must be a DIFFERENT moment that moves the story forward — NEVER repeat or rephrase the same action across shots. If the idea is small, invent believable extra scenes (before/after, reactions, details, new locations) to enrich it rather than repeating.");
 
     const planSys = `You are a professional AI-video pipeline director. Return ONLY valid JSON (no markdown):
 {"title":"catchy title","logline":"1-2 sentence summary","characters":[{"name":"Name","description":"FIXED detailed look: age, hair, build, face, signature clothing — reused every shot for consistency"}],"beats":["short sentence for shot 1","..."]}
-Rules: exactly ${frameCount} beats (one per ${FRAME_LEN}s shot). 2-4 characters.
+Rules: ${countRule} 2-4 characters.
 CONTINUITY IS CRITICAL — the video has NO on-screen text and must feel like ONE continuous short film, not disconnected clips:
 - Each beat continues DIRECTLY from the previous one (clear cause and effect).
 - Keep the SAME location and time-of-day across consecutive shots; change scene only when the story truly moves, and minimize scene changes.
@@ -166,8 +196,9 @@ CONTINUITY IS CRITICAL — the video has NO on-screen text and must feel like ON
 
     const characters = plan.characters || [];
     let beats = plan.beats || [];
-    while (beats.length < frameCount) beats.push("Continue the story.");
-    beats = beats.slice(0, frameCount);
+    if (auto) { beats = beats.slice(0, 8); while (beats.length < 2) beats.push("Continue the story."); }
+    else { while (beats.length < target) beats.push("Continue the story."); beats = beats.slice(0, target); }
+    const frameCount = beats.length;
     const bible = characters.map((c) => c.name + ": " + c.description).join("\n");
 
     const frames = [];
@@ -176,11 +207,11 @@ CONTINUITY IS CRITICAL — the video has NO on-screen text and must feel like ON
       const from = i + 1, to = Math.min(i + BATCH, frameCount);
       const tb = beats.slice(i, to).map((b, k) => `Shot #${i + k + 1}: ${b}`).join("\n");
       const expSys = `Expand story beats into AI text-to-video prompts.
-STYLE: ${style}
+MANDATORY VISUAL STYLE (every prompt MUST start with and strictly follow this exact style): ${style}
 DIALOG LANGUAGE: ${lang}
 CHARACTER BIBLE (reuse EXACT descriptions when a character appears):
 ${bible}
-Return ONLY JSON: {"frames":[{"n":<int>,"location":"scene name","visual_prompt":"detailed ENGLISH prompt incl full description of any character present, camera, lighting, action","speaker":"name or empty","dialog":"line in ${lang} or empty"}]}`;
+Return ONLY JSON: {"frames":[{"n":<int>,"location":"scene name","visual_prompt":"detailed ENGLISH prompt that MUST begin with the mandatory style, then full description of any character present, camera angle, lighting, and the specific action of THIS shot","speaker":"name or empty","dialog":"line in ${lang} or empty"}]}`;
       let batch = [];
       try { batch = parseJson(await callAI(expSys, `Expand:\n${tb}\nLogline: ${plan.logline}`, 3000)).frames || []; } catch (e) {}
       for (let k = 0; k < to - from + 1; k++) {
@@ -221,20 +252,20 @@ app.post("/clip", requireAuth, async (req, res) => {
     const charrefPath = path.join(workDir, "charref.png");
     const charrefExists = fs.existsSync(charrefPath);
 
-    let mode = "boshlang'ich";
+    const quality = req.body.quality === "professional" ? "professional" : "tejamkor";
+    const prof = VIDEO_PROFILES[quality];
+    let mode = quality;
 
     if (frame.n === 1 || !charrefExists) {
       // 1-KADR: matndan video. Keyin personaj REFERENS rasmi olinadi.
-      const r = await falGen(VIDEO_MODEL, { prompt: scenePrompt });
+      const r = await falGen(prof.t2v, prof.t2vInput(scenePrompt));
       const url = videoUrlOf(r);
       if (!url) throw new Error("video URL topilmadi");
       await saveFrom(url, clipPath);
-      // referens rasmni ajratib olamiz (personaj yaxshi ko'rinadigan o'rtadan)
       try { await runFfmpeg(["-y", "-ss", "1", "-i", clipPath, "-frames:v", "1", charrefPath]); }
       catch (e) { try { await runFfmpeg(["-y", "-i", clipPath, "-frames:v", "1", charrefPath]); } catch (e2) {} }
-      mode = "boshlang'ich";
     } else {
-      // KEYINGI KADRLAR: Nano Banana referensdan yangi sahna rasmi yasaydi (personaj bir xil)
+      // KEYINGI KADRLAR: Nano Banana referensdan yangi sahna rasmi (personaj bir xil)
       const charrefUrl = `${base}/output/work_${clean}/charref.png`;
       let keyframeUrl = null;
       try {
@@ -244,21 +275,22 @@ app.post("/clip", requireAuth, async (req, res) => {
       } catch (e) { keyframeUrl = null; }
 
       if (keyframeUrl) {
-        // yangi sahna rasmini videoga aylantiramiz (harakat qo'shamiz)
-        const r = await falGen(VIDEO_MODEL_I2V, { image_url: keyframeUrl, prompt: frame.visual_prompt + " Natural motion and camera movement, cinematic." });
+        const r = await falGen(prof.i2v, prof.i2vInput(keyframeUrl, frame.visual_prompt + " Natural motion and camera movement, cinematic."));
         const url = videoUrlOf(r);
         if (!url) throw new Error("video URL topilmadi");
         await saveFrom(url, clipPath);
-        mode = "referens";
+        mode = quality + "+referens";
       } else {
-        // Zaxira: Nano Banana ishlamasa, matndan video
-        const r = await falGen(VIDEO_MODEL, { prompt: scenePrompt });
+        const r = await falGen(prof.t2v, prof.t2vInput(scenePrompt));
         const url = videoUrlOf(r);
         if (!url) throw new Error("video URL topilmadi");
         await saveFrom(url, clipPath);
-        mode = "zaxira";
+        mode = quality + "+zaxira";
       }
     }
+
+    // Klipni AYNAN 6 soniyaga keltiramiz (davomiylik 100% bir xil bo'lsin)
+    try { await forceDuration(clipPath, FRAME_LEN); } catch (e) { console.log("duration fix xato:", e.message); }
 
     res.json({ ok: true, n: frame.n, clipUrl: `/output/work_${clean}/${fileName}`, mode });
   } catch (e) {
