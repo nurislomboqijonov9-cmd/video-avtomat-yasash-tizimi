@@ -130,17 +130,30 @@
     <div class="row">
       <div><label class="fld">🎨 Uslub</label>
         <select id="style">
-          <option value="Stylized 3D Pixar-style render, cinematic lighting, high detail">Pixar 3D</option>
-          <option value="Photorealistic cinematic film, 35mm, natural lighting">Realistik kino</option>
-          <option value="Anime style, vibrant colors, detailed backgrounds">Anime</option>
-          <option value="Warm hand-drawn 2D animation, storybook aesthetic">2D multfilm</option>
+          <option value="Photorealistic cinematic film, shot on ARRI Alexa, 35mm, natural lighting, shallow depth of field, ultra realistic, film grain">🎬 Realistik kino</option>
+          <option value="Stylized 3D Pixar/Disney-style render, cinematic lighting, high detail, expressive characters">🧸 Pixar 3D</option>
+          <option value="Japanese anime style, cel shading, vibrant colors, detailed backgrounds, studio quality">🌸 Anime</option>
+          <option value="Warm hand-drawn 2D animation, storybook aesthetic, soft colors">✏️ 2D multfilm</option>
+          <option value="Hyper-realistic commercial product advertisement, studio lighting, glossy, premium look, 4k">📢 Reklama (mahsulot)</option>
+          <option value="Cinematic realism, dramatic moody lighting, teal and orange color grade, epic">🎞️ Dramatik kino</option>
+          <option value="Claymation stop-motion style, handmade clay characters, tactile textures">🪀 Plastilin (klay)</option>
+          <option value="Cyberpunk neon aesthetic, futuristic city, glowing lights, high tech">🌃 Kiberpank</option>
+          <option value="Vintage retro film look, 1980s aesthetic, warm faded colors, nostalgic">📼 Retro (80-yillar)</option>
+          <option value="Watercolor painting animation, soft brush strokes, artistic, dreamy">🎨 Akvarel</option>
         </select></div>
       <div><label class="fld">⏱ Davomiylik</label>
         <select id="dur">
+          <option value="auto" selected>⭐ AI tavsiya qilsin</option>
+          <option value="12">12s · 2 kadr</option>
+          <option value="18">18s · 3 kadr</option>
+          <option value="24">24s · 4 kadr</option>
           <option value="30">30s · 5 kadr</option>
-          <option value="60" selected>1 daq · 10 kadr</option>
-          <option value="90">1.5 daq · 15 kadr</option>
-          <option value="120">2 daq · 20 kadr</option>
+          <option value="60">1 daq · 10 kadr</option>
+        </select></div>
+      <div><label class="fld">⚙️ Sifat / model</label>
+        <select id="quality">
+          <option value="tejamkor" selected>Tejamkor (arzon)</option>
+          <option value="professional">Professional (Kling)</option>
         </select></div>
       <div><label class="fld">💬 Dialog tili</label>
         <select id="lang">
@@ -256,8 +269,17 @@ function clearErr(){$("err").classList.remove("on");}
 const FORMATS={"16:9":{ar:"16/9",pw:"760px"},"9:16":{ar:"9/16",pw:"300px"},"1:1":{ar:"1/1",pw:"460px"},"21:9":{ar:"21/9",pw:"860px"}};
 function applyFormat(){const f=FORMATS[$("format").value]||FORMATS["16:9"];document.documentElement.style.setProperty("--ar",f.ar);document.documentElement.style.setProperty("--pw",f.pw);}
 $("format").addEventListener("change",applyFormat);
-function updateCost(){const n=STATE.frames.length||Math.round(parseInt($("dur").value,10)/FRAME_LEN);const total=COST_PER_SEC*FRAME_LEN*n;$("totalCost").textContent="$"+total.toFixed(2);$("costDetail").textContent=`(${n} kadr)`;}
+function updateCost(){
+  const per=$("quality").value==="professional"?0.25:0.05;
+  const durv=$("dur").value;
+  if(durv==="auto" && !STATE.frames.length){$("totalCost").textContent="AI tanlaydi";$("costDetail").textContent="";return;}
+  const n=STATE.frames.length||Math.round(parseInt(durv,10)/FRAME_LEN);
+  const total=per*FRAME_LEN*n;
+  $("totalCost").textContent="$"+total.toFixed(2);
+  $("costDetail").textContent=`(${n} kadr · ${$("quality").value})`;
+}
 $("dur").addEventListener("change",updateCost);
+$("quality").addEventListener("change",updateCost);
 
 function renderHead(d){
   $("title").textContent=d.title;$("logline").textContent=d.logline;
@@ -304,7 +326,7 @@ $("genAll").onclick=async()=>{
     vs.innerHTML='<div class="genwave"></div>video yasalyapti…';
     try{
       const r=await fetch("/clip",{method:"POST",headers:authHeaders(),
-        body:JSON.stringify({jobId,frame:f,aspect_ratio:STATE.aspect_ratio,characters:STATE.characters})});
+        body:JSON.stringify({jobId,frame:f,aspect_ratio:STATE.aspect_ratio,characters:STATE.characters,quality:$("quality").value})});
       const d=await r.json();
       if(d.error)throw new Error(d.error);
       tag.className="vtag done";tag.textContent="✓ ГОТОВО";
