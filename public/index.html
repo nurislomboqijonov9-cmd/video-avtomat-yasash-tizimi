@@ -172,6 +172,17 @@
           <option value="21:9">21:9 · Kino</option>
         </select></div>
     </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:14px">
+      <label class="btn ghost" style="cursor:pointer;margin:0">
+        📎 Personaj/mahsulot rasmi yuklash
+        <input type="file" id="userImg" accept="image/*" style="display:none">
+      </label>
+      <span id="imgName" style="font-size:13px;color:var(--muted2)"></span>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);cursor:pointer;margin-left:auto">
+        <input type="checkbox" id="consistency" checked style="width:auto"> 🎭 Personaj bir xilligi (arzon uchun o'chiring)
+      </label>
+    </div>
+    <img id="imgPreview" style="display:none;max-height:120px;border-radius:10px;margin-top:10px;border:1px solid var(--border)">
     <button class="btn" id="go">✨ 1-BOSQICH: Senariy yasash</button>
     <div class="status" id="status"><div class="spinner"></div><span id="statusText">Ishlayapti…</span></div>
     <div class="err" id="err"></div>
@@ -323,6 +334,16 @@ $("go").onclick=async()=>{
 $("genAll").onclick=async()=>{
   $("genAll").disabled=true;setStep(2);
   const jobId="job"+Date.now();STATE.jobId=jobId;
+  // Foydalanuvchi rasm yuklagan bo'lsa — serverga yuklaymiz
+  let userImageUrl=null;
+  if(USER_IMG_DATAURL){
+    try{
+      const ur=await fetch("/upload-image",{method:"POST",headers:authHeaders(),body:JSON.stringify({jobId,dataUrl:USER_IMG_DATAURL})});
+      const ud=await ur.json();
+      if(ud.url) userImageUrl=ud.url;
+    }catch(e){console.log("rasm yuklashda xato",e);}
+  }
+  const consistency=$("consistency").checked;
   let ok=0;
   for(const f of STATE.frames){
     const tag=$("vtag-"+f.n),vs=$("vstatus-"+f.n);
@@ -330,7 +351,7 @@ $("genAll").onclick=async()=>{
     vs.innerHTML='<div class="genwave"></div>video yasalyapti…';
     try{
       const r=await fetch("/clip",{method:"POST",headers:authHeaders(),
-        body:JSON.stringify({jobId,frame:f,aspect_ratio:STATE.aspect_ratio,characters:STATE.characters,quality:$("quality").value})});
+        body:JSON.stringify({jobId,frame:f,aspect_ratio:STATE.aspect_ratio,characters:STATE.characters,quality:$("quality").value,consistency,userImageUrl})});
       const d=await r.json();
       if(d.error)throw new Error(d.error);
       tag.className="vtag done";tag.textContent="✓ ГОТОВО";
@@ -360,6 +381,15 @@ $("stitch").onclick=async()=>{
   }catch(e){$("stitchStatus").classList.remove("on");showErr("Montaj xatosi: "+e.message);$("stitch").disabled=false;}
 };
 
+// Rasm yuklash
+let USER_IMG_DATAURL=null;
+$("userImg").addEventListener("change",e=>{
+  const f=e.target.files[0];
+  if(!f){USER_IMG_DATAURL=null;$("imgName").textContent="";$("imgPreview").style.display="none";return;}
+  const r=new FileReader();
+  r.onload=()=>{USER_IMG_DATAURL=r.result;$("imgName").textContent="✓ "+f.name;$("imgPreview").src=r.result;$("imgPreview").style.display="block";};
+  r.readAsDataURL(f);
+});
 applyFormat();updateCost();
 </script>
 </body>
