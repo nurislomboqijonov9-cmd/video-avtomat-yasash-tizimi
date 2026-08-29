@@ -25,6 +25,7 @@ const PORT = process.env.PORT || 3000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FAL_KEY = process.env.FAL_KEY;
 const AISHA_API_KEY = process.env.AISHA_API_KEY || ""; // ovoz uchun (aisha.group)
+const VEO_MODEL = process.env.VEO_MODEL || "veo-3.1-fast-generate-preview"; // Google Veo (Gemini kalit orqali, $300 kreditdan)
 
 const TEXT_MODEL = process.env.TEXT_MODEL || "gemini-3.6-flash";
 const VIDEO_MODEL = process.env.VIDEO_MODEL || "fal-ai/ltx-video";
@@ -35,16 +36,32 @@ const IMAGE_EDIT_MODEL = process.env.IMAGE_EDIT_MODEL || "fal-ai/nano-banana/edi
 
 // Tanlanadigan video modellar (interfeysdan tanlanadi)
 const VIDEO_PROFILES = {
+  // 1) Eng arzon — LTX (~$0.05/s)
   tejamkor: {
     t2v: process.env.VIDEO_MODEL || "fal-ai/ltx-2.5/text-to-video/fast",
     i2v: process.env.VIDEO_MODEL_I2V || (process.env.VIDEO_MODEL || "fal-ai/ltx-2.5/text-to-video/fast").replace("text-to-video", "image-to-video"),
     t2vInput: (prompt) => ({ prompt }),
     i2vInput: (imgUrl, prompt) => ({ image_url: imgUrl, prompt }),
   },
+  // 2) O'rtacha — Kling 2.1 Standard (~$0.05/s i2v, arzon lekin sifatli)
+  ortacha: {
+    t2v: process.env.KLING_STD_T2V || "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+    i2v: process.env.KLING_STD_I2V || "fal-ai/kling-video/v2.1/standard/image-to-video",
+    t2vInput: (prompt) => ({ prompt, duration: "5" }),
+    i2vInput: (imgUrl, prompt) => ({ image_url: imgUrl, prompt, duration: "5" }),
+  },
+  // 3) Professional — Kling 2.5 Turbo (~$0.07/s)
   professional: {
-    t2v: process.env.KLING_T2V || "fal-ai/kling-video/v2.1/master/text-to-video",
-    i2v: process.env.KLING_I2V || "fal-ai/kling-video/v2.6/pro/image-to-video",
-    t2vInput: (prompt) => ({ prompt, duration: "5", aspect_ratio: "16:9" }),
+    t2v: process.env.KLING_T2V || "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+    i2v: process.env.KLING_I2V || "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+    t2vInput: (prompt) => ({ prompt, duration: "5" }),
+    i2vInput: (imgUrl, prompt) => ({ image_url: imgUrl, prompt, duration: "5" }),
+  },
+  // 4) Premium — Kling 2.6 Pro (eng yuqori sifat, ~$0.07-0.14/s)
+  premium: {
+    t2v: process.env.KLING_PRO_T2V || "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+    i2v: process.env.KLING_PRO_I2V || "fal-ai/kling-video/v2.6/pro/image-to-video",
+    t2vInput: (prompt) => ({ prompt, duration: "5" }),
     i2vInput: (imgUrl, prompt) => ({ start_image_url: imgUrl, prompt, duration: "5", generate_audio: false }),
   },
 };
@@ -109,6 +126,39 @@ async function falGen(model, input) {
   throw last || new Error("fal xatosi");
 }
 function videoUrlOf(r){ return r?.data?.video?.url || r?.data?.videos?.[0]?.url || r?.video?.url; }
+// Google Veo (Gemini API orqali) — so'rov yuboradi, kutadi, video buferini qaytaradi
+async function genVeo(prompt, imageBuffer, aspectRatio) {
+  const GB = "https://generativelanguage.googleapis.com/v1beta";
+  const instance = { prompt };
+  if (imageBuffer) instance.image = { bytesBase64Encoded: imageBuffer.toString("base64") };
+  const body = { instances: [instance], parameters: { aspectRatio: aspectRatio || "16:9" } };
+  const sub = await fetch(`${GB}/models/${VEO_MODEL}:predictLongRunning`, {
+    method: "POST",
+    headers: { "x-goog-api-key": GEMINI_API_KEY, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const subd = await sub.json().catch(() => ({}));
+  if (!sub.ok) throw new Error(subd.error?.message || ("Veo submit " + sub.status));
+  const opName = subd.name;
+  if (!opName) throw new Error("Veo operation nomi yo'q");
+  let uri = null;
+  for (let i = 0; i < 60; i++) {          // ~5 daqiqagacha kutamiz
+    await sleep(5000);
+    const st = await fetch(`${GB}/${opName}`, { headers: { "x-goog-api-key": GEMINI_API_KEY } });
+    const std = await st.json().catch(() => ({}));
+    if (std.error) throw new Error(std.error.message || "Veo poll xatosi");
+    if (std.done) {
+      uri = std.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri
+         || std.response?.generatedSamples?.[0]?.video?.uri
+         || std.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.gcsUri;
+      if (!uri) throw new Error("Veo video uri topilmadi");
+      break;
+    }
+  }
+  if (!uri) throw new Error("Veo juda uzoq javob bermadi (timeout)");
+  const vid = await fetch(uri, { headers: { "x-goog-api-key": GEMINI_API_KEY } });
+  return Buffer.from(await vid.arrayBuffer());
+}
 function imageUrlOf(r){ return r?.data?.images?.[0]?.url || r?.images?.[0]?.url || r?.data?.image?.url; }
 async function saveFrom(url, filePath){ fs.writeFileSync(filePath, Buffer.from(await (await fetch(url)).arrayBuffer())); }
 
@@ -233,7 +283,9 @@ Return ONLY JSON: {"frames":[{"n":<int>,"location":"scene name","visual_prompt":
 
 app.post("/clip", requireAuth, async (req, res) => {
   try {
-    if (!FAL_KEY) throw new Error("FAL_KEY o'rnatilmagan (Railway Variables).");
+    const qReq = req.body.quality;
+    if (qReq === "veo" && !GEMINI_API_KEY) throw new Error("GEMINI_API_KEY o'rnatilmagan.");
+    if (qReq !== "veo" && !FAL_KEY) throw new Error("FAL_KEY o'rnatilmagan (Railway Variables).");
     const { jobId, frame, characters } = req.body;
     if (!jobId || !frame) throw new Error("jobId yoki frame yo'q");
 
@@ -252,9 +304,30 @@ app.post("/clip", requireAuth, async (req, res) => {
     const charrefPath = path.join(workDir, "charref.png");
     const charrefExists = fs.existsSync(charrefPath);
 
-    const quality = req.body.quality === "professional" ? "professional" : "tejamkor";
-    const prof = VIDEO_PROFILES[quality];
+    const quality = (req.body.quality === "veo" || VIDEO_PROFILES[req.body.quality]) ? req.body.quality : "tejamkor";
     let mode = quality;
+
+    if (quality === "veo") {
+      // GOOGLE VEO ($300 kreditdan). 1-kadr matndan, keyingilar Nano Banana referens rasmidan.
+      let imgBuf = null;
+      if (frame.n > 1 && charrefExists) {
+        try {
+          const charrefUrl = `${base}/output/work_${clean}/charref.png`;
+          const editPrompt = "Keep the EXACT same character(s), faces, clothing and age as in the reference image. New scene and action: " + frame.visual_prompt + ". Cinematic, high detail.";
+          const ir = await falGen(IMAGE_EDIT_MODEL, { prompt: editPrompt, image_urls: [charrefUrl] });
+          const kfUrl = imageUrlOf(ir);
+          if (kfUrl) imgBuf = Buffer.from(await (await fetch(kfUrl)).arrayBuffer());
+        } catch (e) { imgBuf = null; }
+      }
+      const buf = await genVeo(imgBuf ? (frame.visual_prompt + " Natural motion, cinematic.") : scenePrompt, imgBuf, req.body.aspect_ratio || "16:9");
+      fs.writeFileSync(clipPath, buf);
+      if (frame.n === 1) {
+        try { await runFfmpeg(["-y", "-ss", "1", "-i", clipPath, "-frames:v", "1", charrefPath]); }
+        catch (e) { try { await runFfmpeg(["-y", "-i", clipPath, "-frames:v", "1", charrefPath]); } catch (e2) {} }
+      }
+      mode = imgBuf ? "veo+referens" : "veo";
+    } else {
+    const prof = VIDEO_PROFILES[quality];
 
     if (frame.n === 1 || !charrefExists) {
       // 1-KADR: matndan video. Keyin personaj REFERENS rasmi olinadi.
@@ -288,6 +361,7 @@ app.post("/clip", requireAuth, async (req, res) => {
         mode = quality + "+zaxira";
       }
     }
+    } // veo else tugadi
 
     // Klipni AYNAN 6 soniyaga keltiramiz (davomiylik 100% bir xil bo'lsin)
     try { await forceDuration(clipPath, FRAME_LEN); } catch (e) { console.log("duration fix xato:", e.message); }
@@ -426,7 +500,7 @@ app.get("/history", requireAuth, (_, res) => {
 });
 
 app.get("/health", (_, res) =>
-  res.json({ ok: true, text_model: TEXT_MODEL, video_model: VIDEO_MODEL, keys: { gemini: !!GEMINI_API_KEY, fal: !!FAL_KEY, aisha: !!AISHA_API_KEY } })
+  res.json({ ok: true, text_model: TEXT_MODEL, veo_model: VEO_MODEL, keys: { gemini: !!GEMINI_API_KEY, fal: !!FAL_KEY, aisha: !!AISHA_API_KEY } })
 );
 
 app.listen(PORT, () => console.log(`🚀 Video Fabrikasi: http://localhost:${PORT}`));
