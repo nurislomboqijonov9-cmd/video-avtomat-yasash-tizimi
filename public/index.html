@@ -152,8 +152,11 @@
         </select></div>
       <div><label class="fld">⚙️ Sifat / model</label>
         <select id="quality">
-          <option value="tejamkor" selected>Tejamkor (arzon)</option>
-          <option value="professional">Professional (Kling)</option>
+          <option value="tejamkor" selected>💚 Tejamkor · eng arzon</option>
+          <option value="ortacha">🔵 O'rtacha · arzon+sifat</option>
+          <option value="professional">🟣 Professional · reklama</option>
+          <option value="premium">⭐ Premium · eng yuqori</option>
+          <option value="veo">🎥 Veo (Google) · $300 kredit</option>
         </select></div>
       <div><label class="fld">💬 Dialog tili</label>
         <select id="lang">
@@ -270,7 +273,8 @@ const FORMATS={"16:9":{ar:"16/9",pw:"760px"},"9:16":{ar:"9/16",pw:"300px"},"1:1"
 function applyFormat(){const f=FORMATS[$("format").value]||FORMATS["16:9"];document.documentElement.style.setProperty("--ar",f.ar);document.documentElement.style.setProperty("--pw",f.pw);}
 $("format").addEventListener("change",applyFormat);
 function updateCost(){
-  const per=$("quality").value==="professional"?0.25:0.05;
+  const PRICES={tejamkor:0.05, ortacha:0.06, professional:0.08, premium:0.12, veo:0.10};
+  const per=PRICES[$("quality").value]||0.05;
   const durv=$("dur").value;
   if(durv==="auto" && !STATE.frames.length){$("totalCost").textContent="AI tanlaydi";$("costDetail").textContent="";return;}
   const n=STATE.frames.length||Math.round(parseInt(durv,10)/FRAME_LEN);
